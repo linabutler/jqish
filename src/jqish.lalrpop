@@ -1,0 +1,219 @@
+// Copyright (c) 2025 Lina Butler
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! A LARLPOP grammar for the `jqish` language.
+
+use std::str::FromStr;
+
+use lalrpop_util::ParseError;
+
+use crate::{
+    error::{SpannedError, LexicalError},
+    lexer::Token,
+    parser::{unquote, Expr, Number},
+};
+
+grammar<'input>(text: &'input str);
+
+extern {
+    type Location = usize;
+    type Error = SpannedError<LexicalError>;
+
+    enum Token<'input> {
+        "//" => Token::Alternative,
+        "==" => Token::Equal,
+        "!=" => Token::NotEqual,
+        "<=" => Token::LessEqual,
+        ">=" => Token::GreaterEqual,
+        ".." => Token::DotDot,
+
+        "|" => Token::Pipe,
+        "<" => Token::Less,
+        ">" => Token::Greater,
+        "+" => Token::Plus,
+        "-" => Token::Minus,
+        "*" => Token::Multiply,
+        "/" => Token::Divide,
+        "%" => Token::Modulo,
+        "?" => Token::Question,
+        "." => Token::Dot,
+        "[" => Token::LeftBracket,
+        "]" => Token::RightBracket,
+        "{" => Token::LeftBrace,
+        "}" => Token::RightBrace,
+        "(" => Token::LeftParen,
+        ")" => Token::RightParen,
+        ":" => Token::Colon,
+        ";" => Token::Semicolon,
+        "," => Token::Comma,
+
+        "and" => Token::And,
+        "or" => Token::Or,
+        "not" => Token::Not,
+        "true" => Token::True,
+        "false" => Token::False,
+        "null" => Token::Null,
+
+        "number" => Token::Number(<&'input str>),
+        "string" => Token::String(<&'input str>),
+        "ident" => Token::Ident(<&'input str>),
+    }
+}
+
+// Arranged in order of precedence, lowest (binds looser)
+// to highest (binds tighter).
+
+pub Expr: Expr<'input> = {
+    <lhs:Expr> "|" <rhs:OrExpr> => Expr::Pipe(lhs.into(), rhs.into()),
+    AlternativeExpr,
+};
+
+AlternativeExpr: Expr<'input> = {
+    <lhs:AlternativeExpr> "//" <rhs:OrExpr> => Expr::Alternative(lhs.into(), rhs.into()),
+    OrExpr,
+};
+
+OrExpr: Expr<'input> = {
+    <lhs:OrExpr> "or" <rhs:AndExpr> => Expr::Or(lhs.into(), rhs.into()),
+    AndExpr,
+};
+
+AndExpr: Expr<'input> = {
+    <lhs:AndExpr> "and" <rhs:CompareExpr> => Expr::And(lhs.into(), rhs.into()),
+    CompareExpr,
+};
+
+CompareExpr: Expr<'input> = {
+    <lhs:CompareExpr> "==" <rhs:ArithExpr> => Expr::Equal(lhs.into(), rhs.into()),
+    <lhs:CompareExpr> "!=" <rhs:ArithExpr> => Expr::NotEqual(lhs.into(), rhs.into()),
+    <lhs:CompareExpr> "<=" <rhs:ArithExpr> => Expr::LessEqual(lhs.into(), rhs.into()),
+    <lhs:CompareExpr> ">=" <rhs:ArithExpr> => Expr::GreaterEqual(lhs.into(), rhs.into()),
+    <lhs:CompareExpr> "<" <rhs:ArithExpr> => Expr::Less(lhs.into(), rhs.into()),
+    <lhs:CompareExpr> ">" <rhs:ArithExpr> => Expr::Greater(lhs.into(), rhs.into()),
+    ArithExpr,
+};
+
+ArithExpr: Expr<'input> = {
+    <lhs:ArithExpr> "+" <rhs:MulExpr> => Expr::Add(lhs.into(), rhs.into()),
+    <lhs:ArithExpr> "-" <rhs:MulExpr> => Expr::Subtract(lhs.into(), rhs.into()),
+    MulExpr,
+};
+
+MulExpr: Expr<'input> = {
+    <lhs:MulExpr> "*" <rhs:PrefixExpr> => Expr::Multiply(lhs.into(), rhs.into()),
+    <lhs:MulExpr> "/" <rhs:PrefixExpr> => Expr::Divide(lhs.into(), rhs.into()),
+    <lhs:MulExpr> "%" <rhs:PrefixExpr> => Expr::Modulo(lhs.into(), rhs.into()),
+    PrefixExpr,
+};
+
+PrefixExpr: Expr<'input> = {
+    "-" <PrefixExpr> => Expr::Negate(<>.into()),
+    "not" <PrefixExpr> => Expr::Not(<>.into()),
+    PostfixExpr,
+};
+
+PostfixExpr: Expr<'input> = {
+    <expr:PostfixExpr> "." <key:Ident> => Expr::Index(expr.into(), key.into()),
+    <expr:PostfixExpr> "." <key:Ident> "?" => Expr::IndexOpt(expr.into(), key.into()),
+
+    <expr:PostfixExpr> "[" <index:AlternativeExpr> "]" => Expr::Index(expr.into(), index.into()),
+    <expr:PostfixExpr> "[" <index:AlternativeExpr> "]" "?" => Expr::IndexOpt(expr.into(), index.into()),
+
+    <expr:PostfixExpr> "[" <start:AlternativeExpr?> ":" <end:AlternativeExpr?> "]" => {
+        Expr::Slice(expr.into(), start.map(Box::new), end.map(Box::new))
+    },
+
+    Atom,
+};
+
+Atom: Expr<'input> = {
+    "." => Expr::Identity,
+    ".." => Expr::RecursiveDescent,
+
+    "." <Ident> => Expr::Index(Expr::Identity.into(), <>.into()),
+    "." <Ident> "?" => Expr::IndexOpt(Expr::Identity.into(), <>.into()),
+
+    "(" <Expr> ")" => <>,
+    "[" <CommaSeparated<Expr>> "]" => Expr::Array(<>),
+    "{" <CommaSeparated<Member>> "}" => Expr::Object(<>),
+
+    <name:"ident"> "(" <args:SemicolonSeparated<Expr>> ")" => Expr::Call(name, args),
+
+    <start:@L> <n:"number"> <end:@R> =>? Ok(
+        Expr::Number(
+            Number::from_str(n).map_err(|err| ParseError::User {
+                error: SpannedError {
+                    error: err.into(),
+                    location: (start, end),
+                },
+            })?
+        )
+    ),
+    String,
+    Bool,
+    Null,
+};
+
+Member: (Expr<'input>, Expr<'input>) = {
+    <key:Ident> ":" <value:Expr> => (key, value),
+    "(" <key:Expr> ")" ":" <value:Expr> => (key, value),
+    <Ident> => (<>.clone(), <>),
+};
+
+String: Expr<'input> = {
+    <start:@L> <s:"string"> =>? Ok(
+        Expr::String(
+            unquote(s).map_err(|err| ParseError::User {
+                error: SpannedError {
+                    error: LexicalError::BadEscape(err.error),
+                    location: (start + err.location.0, start + err.location.1),
+                },
+            })?
+        )
+    ),
+};
+
+Bool: Expr<'input> = {
+    "true" => Expr::Bool(true),
+    "false" => Expr::Bool(false),
+};
+
+Null: Expr<'input> = {
+    "null" => Expr::Null,
+};
+
+Ident: Expr<'input> = {
+    String,
+    Bool,
+    Null,
+    <start:@L> <n:"number"> <end:@R> =>? Ok(
+        Expr::Number(
+            Number::from_int_str(n)
+                .map_err(|err| ParseError::User {
+                    error: SpannedError {
+                        error: err.into(),
+                        location: (start, end),
+                    },
+                })?
+        )
+    ),
+    "ident" => Expr::String(<>.into()),
+};
+
+CommaSeparated<T>: Vec<T> = {
+    () => vec![],
+    <item:T> => vec![item],
+    <mut items:CommaSeparated<T>> "," <item:T> => {
+        items.push(item);
+        items
+    }
+};
+
+SemicolonSeparated<T>: Vec<T> = {
+    () => vec![],
+    <item:T> => vec![item],
+    <mut items:SemicolonSeparated<T>> ";" <item:T> => {
+        items.push(item);
+        items
+    }
+};
