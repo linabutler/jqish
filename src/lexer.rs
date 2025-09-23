@@ -50,7 +50,7 @@ pub enum Token<'input> {
 
 /// A lexer for the `jqish` grammar.
 ///
-/// We use a custom lexer instead of LARLPOP's default because
+/// We use a custom lexer instead of LALRPOP's default because
 /// the grammar is easier to lex character-by-character: in particular,
 /// strings and numbers are much harder to lex with regular expressions.
 pub struct Lexer<'input> {

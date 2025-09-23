@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Lina Butler
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A LARLPOP grammar for the `jqish` language.
+//! A LALRPOP grammar for the `jqish` language.
 
 use std::str::FromStr;
 

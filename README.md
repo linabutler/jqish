@@ -57,7 +57,7 @@ These features parse as described in the [`jq` manual](https://jqlang.org/manual
 | Numbers                | `42`, `-10`, `3.14`, `-1e10`, `1.5e-3`                                                                                    |
 | Strings                | `"hello"`, `'good-bye'`, `"with \"escapes\""`                                                                             |
 | Literals               | `true`, `false`, `null`                                                                                                   |
-| Array construction     | `[]`, `[1, 2, 3]`, `[.a, .b, .c | .d]`                                                                                    |
+| Array construction     | `[]`, `[1, 2, 3]`, `[.a, .b, .c \| .d]`                                                                                   |
 | Object construction    | `{}`, `{hello: "world"}`, `{name: .user, age, "favorite-name": .color}`, `{(.key): .value, (.prefix + .suffix): .result}` |
 
 
@@ -65,7 +65,7 @@ These features parse as described in the [`jq` manual](https://jqlang.org/manual
 
 |                        |                                  |
 |------------------------|----------------------------------|
-| Pipes                  | `.a | .b`                        |
+| Pipes                  | `.a \| .b`                       |
 | Arithmetic operations  | `+`, `-`, `*`, `/`, `%`          |
 | Comparisons            | `==`, `!=`, `<`, `>`, `<=`, `>=` |
 | Boolean operators      | `a and b`, `a or b`, `not b`     |
