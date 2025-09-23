@@ -1,6 +1,6 @@
 [package]
 name = "jqish"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A subset of the `jq` language for working with in-memory data structures"
 license = "Apache-2.0 OR MIT"

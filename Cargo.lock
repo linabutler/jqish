@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "jqish"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "itertools 0.13.0",
  "lalrpop",
