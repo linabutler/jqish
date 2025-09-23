@@ -3,19 +3,28 @@
 
 use std::{borrow::Cow, str::FromStr};
 
-use lalrpop_util::{ParseError as LalrpopParseError, lalrpop_mod};
+use lalrpop_util::ParseError as LalrpopParseError;
 
-use crate::error::LexicalError;
+use super::{
+    error::{LexicalError, SpannedError},
+    lexer::Lexer,
+};
 
-use super::{error::SpannedError, lexer::Lexer};
+mod grammar {
+    #![allow(clippy::all)]
 
-lalrpop_mod!(jqish);
+    use lalrpop_util::lalrpop_mod;
+
+    lalrpop_mod!(jqish);
+
+    pub use self::jqish::ExprParser;
+}
 
 /// Parses a string containing a `jq`-like filter expression
 /// into an expression tree.
 pub fn parse(input: &str) -> Result<Expr<'_>, SpannedError<LexicalError>> {
     let lexer = Lexer::new(input);
-    let parser = jqish::ExprParser::new();
+    let parser = grammar::ExprParser::new();
     parser.parse(input, lexer).map_err(|err| match err {
         LalrpopParseError::ExtraToken {
             token: (start, _, end),
@@ -68,8 +77,8 @@ pub enum Expr<'a> {
     /// let expr = parse("42").unwrap();
     /// assert_eq!(expr, Expr::Number(Number::Int(42)));
     ///
-    /// let expr = parse("3.14").unwrap();
-    /// assert_eq!(expr, Expr::Number(Number::Float(3.14)));
+    /// let expr = parse("9.42").unwrap();
+    /// assert_eq!(expr, Expr::Number(Number::Float(9.42)));
     /// ```
     Number(Number),
 
@@ -715,12 +724,9 @@ mod tests {
             Expr::Object(vec![
                 (
                     Expr::String("result".into()),
-                    Expr::Call("contains".into(), vec![Expr::String("string".into())]),
+                    Expr::Call("contains", vec![Expr::String("string".into())]),
                 ),
-                (
-                    Expr::String("count".into()),
-                    Expr::Call("length".into(), vec![]),
-                )
+                (Expr::String("count".into()), Expr::Call("length", vec![]),)
             ])
         );
     }
@@ -1257,7 +1263,7 @@ mod tests {
     fn test_number_formats() {
         let positive_cases = vec![
             ("42", Expr::Number(Number::Int(42))),
-            ("3.14", Expr::Number(Number::Float(3.14))),
+            ("9.42", Expr::Number(Number::Float(9.42))),
             ("0", Expr::Number(Number::Int(0))),
             ("0.5", Expr::Number(Number::Float(0.5))),
             (".5", Expr::Number(Number::Float(0.5))),
@@ -1272,10 +1278,10 @@ mod tests {
         let result = parse("-7").unwrap();
         assert_eq!(result, Expr::Negate(Box::new(Expr::Number(Number::Int(7)))));
 
-        let result = parse("-3.14").unwrap();
+        let result = parse("-9.42").unwrap();
         assert_eq!(
             result,
-            Expr::Negate(Box::new(Expr::Number(Number::Float(3.14))))
+            Expr::Negate(Box::new(Expr::Number(Number::Float(9.42))))
         );
 
         let result = parse("1.5e-3").unwrap();
