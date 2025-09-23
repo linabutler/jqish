@@ -25,7 +25,6 @@ extern {
         "!=" => Token::NotEqual,
         "<=" => Token::LessEqual,
         ">=" => Token::GreaterEqual,
-        ".." => Token::DotDot,
 
         "|" => Token::Pipe,
         "<" => Token::Less,
@@ -128,7 +127,6 @@ PostfixExpr: Expr<'input> = {
 
 Atom: Expr<'input> = {
     "." => Expr::Identity,
-    ".." => Expr::RecursiveDescent,
 
     "." <Ident> => Expr::Index(Expr::Identity.into(), <>.into()),
     "." <Ident> "?" => Expr::IndexOpt(Expr::Identity.into(), <>.into()),

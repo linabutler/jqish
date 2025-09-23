@@ -59,18 +59,6 @@ pub enum Expr<'a> {
     /// ```
     Identity,
 
-    /// The recursive descent operator, `..`. This operator yields
-    /// every descendant of `.` to the next filter.
-    ///
-    /// ## Examples
-    ///
-    /// ```rust
-    /// # use jqish::{parse, Expr};
-    /// let expr = parse("..").unwrap();
-    /// assert_eq!(expr, Expr::RecursiveDescent);
-    /// ```
-    RecursiveDescent,
-
     /// An integer or floating-point literal.
     ///
     /// ## Examples
@@ -854,24 +842,6 @@ mod tests {
                     Box::new(Expr::Number(Number::Int(2)))
                 ))),
                 None
-            )
-        );
-    }
-
-    #[test]
-    fn test_recursive_descent() {
-        let result = parse("..").unwrap();
-        assert_eq!(result, Expr::RecursiveDescent);
-
-        let result = parse(".. | .name").unwrap();
-        assert_eq!(
-            result,
-            Expr::Pipe(
-                Box::new(Expr::RecursiveDescent),
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("name".into()))
-                ))
             )
         );
     }

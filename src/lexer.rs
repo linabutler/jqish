@@ -15,7 +15,6 @@ pub enum Token<'input> {
     NotEqual,     // !=
     LessEqual,    // <=
     GreaterEqual, // >=
-    DotDot,       // ..
 
     Pipe,         // |
     Less,         // <
@@ -205,7 +204,6 @@ impl<'input> Lexer<'input> {
             ((start, '!'), Some((end, '='))) => (start, Token::NotEqual, end),
             ((start, '<'), Some((end, '='))) => (start, Token::LessEqual, end),
             ((start, '>'), Some((end, '='))) => (start, Token::GreaterEqual, end),
-            ((start, '.'), Some((end, '.'))) => (start, Token::DotDot, end),
 
             ((at, '|'), _) => (at, Token::Pipe, at),
             ((at, '<'), _) => (at, Token::Less, at),
