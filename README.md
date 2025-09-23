@@ -1,8 +1,10 @@
-# jqish: A `jq`-like expression evaluator
+# jqish: A `jq`-like expression parser
 
-**jqish** implements a subset of the [`jq` language](https://jqlang.org/manual) for querying and transforming JSON-like data.
+`jqish` implements a subset of the [`jq` language](https://jqlang.org/manual) for querying and transforming JSON-like data.
 
-While the venerable `jq` is a command-line tool that operates on JSON text, **jqish** is a library that operates on data structures in your program. Think of it as an alternative to [JSONPath](https://www.rfc-editor.org/rfc/rfc9535) or [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901).
+While the venerable `jq` is a command-line tool that operates on JSON text, `jqish` is a library that operates on data structures in your program. Think of it like an alternative to [JSONPath](https://www.rfc-editor.org/rfc/rfc9535) or [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901).
+
+🚧 This project is still **under development**. There's a grammar and parser, but no evaluator yet.
 
 ## Usage
 
@@ -35,37 +37,41 @@ println!("{:?}", expr); // Expr::Not(...)
 
 ### ✅ Supported
 
+These features parse as described in the [`jq` manual](https://jqlang.org/manual/).
+
 ### Filters
 
-* Identity: `.`.
-* Identifier-based indexing: `.foo`, `.foo.bar`, `."foo-bar"`
-* Array and object indexing: `.[0]`, `.["key"]`, `.[.expr]`
-* Array slicing: `.[1:3]`, `.[2:]`, `.[:5]`, `.[:]`, `.[-3]`, `.[length() % 2]`
-* Optional indexing: `.foo?`, `."foo-bar".baz?`, `.[1]?`
+|                             |                                                                |
+|-----------------------------|----------------------------------------------------------------|
+| Identity                    | `.`                                                            |
+| Object identifier-indexing  | `.foo`, `.foo.bar`, `."foo-bar"`                               |
+| Array and object indexing   | `.[0]`, `.["key"]`, `.[.expr]`                                 |
+| Array slicing               | `.[1:3]`, `.[2:]`, `.[:5]`, `.[:]`, `.[-3]`, `.[length() % 2]` |
+| Optionals                   | `.foo?`, `."foo-bar".baz?`, `.[1]?`                            |
 
-### Literals and types
 
-* Numbers: `42`, `-10`, `3.14`, `-1e10`, `1.5e-3`
-* Strings: `"hello"`, `'good-bye'`, `"with \\"escapes\\""`
-* Booleans: `true`, `false`
-* Arrays and objects: `[]`, `[1, 2, 3]`, `{}`, `{hello: "world"}`
-* `null`
+### Types and values
+
+|                        |                                                                                                                           |
+|------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| Numbers                | `42`, `-10`, `3.14`, `-1e10`, `1.5e-3`                                                                                    |
+| Strings                | `"hello"`, `'good-bye'`, `"with \"escapes\""`                                                                             |
+| Literals               | `true`, `false`, `null`                                                                                                   |
+| Array construction     | `[]`, `[1, 2, 3]`, `[.a, .b, .c | .d]`                                                                                    |
+| Object construction    | `{}`, `{hello: "world"}`, `{name: .user, age, "favorite-name": .color}`, `{(.key): .value, (.prefix + .suffix): .result}` |
+
 
 ### Expressions and operators
 
-* Pipes: `.a | .b`
-* Arithmetic operations: `+`, `-`, `*`, `/`, `%`
-* Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`
-* Boolean operators: `a and b`, `a or b`, `not b`
-* Alternatives: `a // b`
-* Grouping: `(. + 2) * 5`
+|                        |                                  |
+|------------------------|----------------------------------|
+| Pipes                  | `.a | .b`                        |
+| Arithmetic operations  | `+`, `-`, `*`, `/`, `%`          |
+| Comparisons            | `==`, `!=`, `<`, `>`, `<=`, `>=` |
+| Boolean operators      | `a and b`, `a or b`, `not b`     |
+| Alternatives           | `a // b`                         |
+| Grouping               | `(. + 2) * 5`                    |
 
-### Array and object construction
-
-* Array construction: `[.a, .b, .c | .d]`
-* Object construction: `{name: .user, age, "favorite-name": .color}`
-* Computed keys: `{(.key): .value, (.prefix + .suffix): .result}`
-* Recursive descent: `..`
 
 ### ❌ Not supported
 
