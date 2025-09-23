@@ -419,6 +419,25 @@ pub enum Expr<'a> {
     /// ```
     Not(Box<Expr<'a>>),
 
+    /// An optional expression, `expr?`, which short-circuits to `null` if
+    /// `expr` is `null` or an error. This is sometimes called the
+    /// "safe navigation operator" in other languages.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// # use jqish::{parse, Expr};
+    /// # use std::borrow::Cow;
+    /// let expr = parse(".name?").unwrap();
+    /// assert_eq!(expr, Expr::Opt(
+    ///     Box::new(Expr::Index(
+    ///         Box::new(Expr::Identity),
+    ///         Box::new(Expr::String(Cow::Borrowed("name"))),
+    ///     ))
+    /// ));
+    /// ```
+    Opt(Box<Expr<'a>>),
+
     /// An indexing operation, `.[expr]`, used to access
     /// array elements and object properties.
     ///
@@ -440,23 +459,6 @@ pub enum Expr<'a> {
     /// ));
     /// ```
     Index(Box<Expr<'a>>, Box<Expr<'a>>),
-
-    /// An optional indexing operation, `.[expr]?`, which short-circuits to `null`
-    /// if the element or property doesn't exist. This is sometimes called the
-    /// "safe navigation operator" in other languages.
-    ///
-    /// ## Examples
-    ///
-    /// ```rust
-    /// # use jqish::{parse, Expr};
-    /// # use std::borrow::Cow;
-    /// let expr = parse(".name?").unwrap();
-    /// assert_eq!(expr, Expr::IndexOpt(
-    ///     Box::new(Expr::Identity),
-    ///     Box::new(Expr::String(Cow::Borrowed("name")))
-    /// ));
-    /// ```
-    IndexOpt(Box<Expr<'a>>, Box<Expr<'a>>),
 
     /// A slice expression, `.[start:end]`. Both `start` and `end` are optional,
     /// and respectively default to the beginning and end of the array if omitted.
@@ -664,29 +666,29 @@ mod tests {
                 ),
                 (
                     Expr::String("error".into()),
-                    Expr::IndexOpt(
+                    Expr::Opt(Box::new(Expr::Index(
                         Box::new(Expr::Index(
                             Box::new(Expr::Identity),
                             Box::new(Expr::String("body".into())),
                         )),
                         Box::new(Expr::String("error".into()))
-                    ),
+                    ))),
                 ),
                 (
                     Expr::String("apps".into()),
-                    Expr::IndexOpt(
+                    Expr::Opt(Box::new(Expr::Index(
                         Box::new(Expr::Index(
-                            Box::new(Expr::IndexOpt(
+                            Box::new(Expr::Opt(Box::new(Expr::Index(
                                 Box::new(Expr::Index(
                                     Box::new(Expr::Identity),
                                     Box::new(Expr::String("body".into())),
                                 )),
                                 Box::new(Expr::String("data".into())),
-                            )),
+                            )))),
                             Box::new(Expr::String("project".into())),
                         )),
                         Box::new(Expr::String("supportedApps".into()))
-                    )
+                    )))
                 )
             ])
         );
@@ -913,19 +915,19 @@ mod tests {
         let result = parse(".user?.profile.settings?.theme?").unwrap();
         assert_eq!(
             result,
-            Expr::IndexOpt(
-                Box::new(Expr::IndexOpt(
+            Expr::Opt(Box::new(Expr::Index(
+                Box::new(Expr::Opt(Box::new(Expr::Index(
                     Box::new(Expr::Index(
-                        Box::new(Expr::IndexOpt(
+                        Box::new(Expr::Opt(Box::new(Expr::Index(
                             Box::new(Expr::Identity),
                             Box::new(Expr::String("user".into()))
-                        )),
+                        )))),
                         Box::new(Expr::String("profile".into()))
                     )),
                     Box::new(Expr::String("settings".into()))
-                )),
+                )))),
                 Box::new(Expr::String("theme".into()))
-            )
+            )))
         );
     }
 
@@ -968,16 +970,16 @@ mod tests {
         let result = parse(".[0]?[1]?.field?").unwrap();
         assert_eq!(
             result,
-            Expr::IndexOpt(
-                Box::new(Expr::IndexOpt(
-                    Box::new(Expr::IndexOpt(
+            Expr::Opt(Box::new(Expr::Index(
+                Box::new(Expr::Opt(Box::new(Expr::Index(
+                    Box::new(Expr::Opt(Box::new(Expr::Index(
                         Box::new(Expr::Identity),
                         Box::new(Expr::Number(Number::Int(0)))
-                    )),
+                    )))),
                     Box::new(Expr::Number(Number::Int(1)))
-                )),
+                )))),
                 Box::new(Expr::String("field".into()))
-            )
+            )))
         );
     }
 
@@ -1399,10 +1401,10 @@ mod tests {
         let result = parse(r#"."field-with-dashes"?"#).unwrap();
         assert_eq!(
             result,
-            Expr::IndexOpt(
+            Expr::Opt(Box::new(Expr::Index(
                 Box::new(Expr::Identity),
                 Box::new(Expr::String("field-with-dashes".into()))
-            )
+            )))
         );
 
         let result = parse(r#".user"#).unwrap(); // This works
@@ -1548,13 +1550,13 @@ mod tests {
         let result = parse(".data.null?").unwrap();
         assert_eq!(
             result,
-            Expr::IndexOpt(
+            Expr::Opt(Box::new(Expr::Index(
                 Box::new(Expr::Index(
                     Box::new(Expr::Identity),
                     Box::new(Expr::String("data".into()))
                 )),
                 Box::new(Expr::Null)
-            )
+            )))
         );
 
         let result = parse(r#"{true: .yes, false: .no, null: .empty}"#).unwrap();
@@ -1687,13 +1689,13 @@ mod tests {
         let result = parse(r#".data."field-name"?"#).unwrap();
         assert_eq!(
             result,
-            Expr::IndexOpt(
+            Expr::Opt(Box::new(Expr::Index(
                 Box::new(Expr::Index(
                     Box::new(Expr::Identity),
                     Box::new(Expr::String("data".into()))
                 )),
                 Box::new(Expr::String("field-name".into()))
-            )
+            )))
         );
 
         let result = parse(r#".response."api-data"."user-info"."email-address""#).unwrap();
@@ -1863,22 +1865,22 @@ mod tests {
         let result = parse(r#".data."user-info"?.true."settings"?.null?"#).unwrap();
         assert_eq!(
             result,
-            Expr::IndexOpt(
-                Box::new(Expr::IndexOpt(
+            Expr::Opt(Box::new(Expr::Index(
+                Box::new(Expr::Opt(Box::new(Expr::Index(
                     Box::new(Expr::Index(
-                        Box::new(Expr::IndexOpt(
+                        Box::new(Expr::Opt(Box::new(Expr::Index(
                             Box::new(Expr::Index(
                                 Box::new(Expr::Identity),
                                 Box::new(Expr::String("data".into()))
                             )),
                             Box::new(Expr::String("user-info".into()))
-                        )),
+                        )))),
                         Box::new(Expr::Bool(true))
                     )),
                     Box::new(Expr::String("settings".into()))
-                )),
+                )))),
                 Box::new(Expr::Null)
-            )
+            )))
         );
     }
 

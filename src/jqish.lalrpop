@@ -113,15 +113,11 @@ PrefixExpr: Expr<'input> = {
 
 PostfixExpr: Expr<'input> = {
     <expr:PostfixExpr> "." <key:Ident> => Expr::Index(expr.into(), key.into()),
-    <expr:PostfixExpr> "." <key:Ident> "?" => Expr::IndexOpt(expr.into(), key.into()),
-
     <expr:PostfixExpr> "[" <index:AlternativeExpr> "]" => Expr::Index(expr.into(), index.into()),
-    <expr:PostfixExpr> "[" <index:AlternativeExpr> "]" "?" => Expr::IndexOpt(expr.into(), index.into()),
-
     <expr:PostfixExpr> "[" <start:AlternativeExpr?> ":" <end:AlternativeExpr?> "]" => {
         Expr::Slice(expr.into(), start.map(Box::new), end.map(Box::new))
     },
-
+    <expr:PostfixExpr> "?" => Expr::Opt(expr.into()),
     Atom,
 };
 
@@ -129,7 +125,6 @@ Atom: Expr<'input> = {
     "." => Expr::Identity,
 
     "." <Ident> => Expr::Index(Expr::Identity.into(), <>.into()),
-    "." <Ident> "?" => Expr::IndexOpt(Expr::Identity.into(), <>.into()),
 
     "(" <Expr> ")" => <>,
     "[" <CommaSeparated<Expr>> "]" => Expr::Array(<>),
