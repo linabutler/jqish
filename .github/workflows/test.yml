@@ -96,4 +96,4 @@ jobs:
           RUSTC_WRAPPER: sccache
           SCCACHE_LOCAL_RW_MODE: READ_ONLY
         run: |
-          cargo test --workspace --no-fail-fast
+          cargo test --workspace --no-fail-fast --all-features

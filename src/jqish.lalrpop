@@ -62,27 +62,27 @@ extern {
 // Arranged in order of precedence, lowest (binds looser)
 // to highest (binds tighter).
 
-pub Expr: Expr<'input> = {
+pub Expr: Expr = {
     <lhs:Expr> "|" <rhs:OrExpr> => Expr::Pipe(lhs.into(), rhs.into()),
     AlternativeExpr,
 };
 
-AlternativeExpr: Expr<'input> = {
+AlternativeExpr: Expr = {
     <lhs:AlternativeExpr> "//" <rhs:OrExpr> => Expr::Alternative(lhs.into(), rhs.into()),
     OrExpr,
 };
 
-OrExpr: Expr<'input> = {
+OrExpr: Expr = {
     <lhs:OrExpr> "or" <rhs:AndExpr> => Expr::Or(lhs.into(), rhs.into()),
     AndExpr,
 };
 
-AndExpr: Expr<'input> = {
+AndExpr: Expr = {
     <lhs:AndExpr> "and" <rhs:CompareExpr> => Expr::And(lhs.into(), rhs.into()),
     CompareExpr,
 };
 
-CompareExpr: Expr<'input> = {
+CompareExpr: Expr = {
     <lhs:CompareExpr> "==" <rhs:ArithExpr> => Expr::Equal(lhs.into(), rhs.into()),
     <lhs:CompareExpr> "!=" <rhs:ArithExpr> => Expr::NotEqual(lhs.into(), rhs.into()),
     <lhs:CompareExpr> "<=" <rhs:ArithExpr> => Expr::LessEqual(lhs.into(), rhs.into()),
@@ -92,26 +92,26 @@ CompareExpr: Expr<'input> = {
     ArithExpr,
 };
 
-ArithExpr: Expr<'input> = {
+ArithExpr: Expr = {
     <lhs:ArithExpr> "+" <rhs:MulExpr> => Expr::Add(lhs.into(), rhs.into()),
     <lhs:ArithExpr> "-" <rhs:MulExpr> => Expr::Subtract(lhs.into(), rhs.into()),
     MulExpr,
 };
 
-MulExpr: Expr<'input> = {
+MulExpr: Expr = {
     <lhs:MulExpr> "*" <rhs:PrefixExpr> => Expr::Multiply(lhs.into(), rhs.into()),
     <lhs:MulExpr> "/" <rhs:PrefixExpr> => Expr::Divide(lhs.into(), rhs.into()),
     <lhs:MulExpr> "%" <rhs:PrefixExpr> => Expr::Modulo(lhs.into(), rhs.into()),
     PrefixExpr,
 };
 
-PrefixExpr: Expr<'input> = {
+PrefixExpr: Expr = {
     "-" <PrefixExpr> => Expr::Negate(<>.into()),
     "not" <PrefixExpr> => Expr::Not(<>.into()),
     PostfixExpr,
 };
 
-PostfixExpr: Expr<'input> = {
+PostfixExpr: Expr = {
     <expr:PostfixExpr> "." <key:Ident> => Expr::Index(expr.into(), key.into()),
     <expr:PostfixExpr> "[" <index:AlternativeExpr> "]" => Expr::Index(expr.into(), index.into()),
     <expr:PostfixExpr> "[" <start:AlternativeExpr?> ":" <end:AlternativeExpr?> "]" => {
@@ -121,7 +121,7 @@ PostfixExpr: Expr<'input> = {
     Atom,
 };
 
-Atom: Expr<'input> = {
+Atom: Expr = {
     "." => Expr::Identity,
 
     "." <Ident> => Expr::Index(Expr::Identity.into(), <>.into()),
@@ -130,7 +130,8 @@ Atom: Expr<'input> = {
     "[" <CommaSeparated<Expr>> "]" => Expr::Array(<>),
     "{" <CommaSeparated<Member>> "}" => Expr::Object(<>),
 
-    <name:"ident"> "(" <args:SemicolonSeparated<Expr>> ")" => Expr::Call(name, args),
+    <name:"ident"> "(" <args:SemicolonSeparated<Expr>> ")" => Expr::Call(name.into(), args),
+    <name:"ident"> => Expr::Call(name.into(), vec![]),
 
     <start:@L> <n:"number"> <end:@R> =>? Ok(
         Expr::Number(
@@ -147,13 +148,13 @@ Atom: Expr<'input> = {
     Null,
 };
 
-Member: (Expr<'input>, Expr<'input>) = {
+Member: (Expr, Expr) = {
     <key:Ident> ":" <value:Expr> => (key, value),
     "(" <key:Expr> ")" ":" <value:Expr> => (key, value),
-    <Ident> => (<>.clone(), <>),
+    <Ident> => (<>.clone(), Expr::Index(Expr::Identity.into(), <>.into())),
 };
 
-String: Expr<'input> = {
+String: Expr = {
     <start:@L> <s:"string"> =>? Ok(
         Expr::String(
             unquote(s).map_err(|err| ParseError::User {
@@ -161,21 +162,21 @@ String: Expr<'input> = {
                     error: LexicalError::BadEscape(err.error),
                     location: (start + err.location.0, start + err.location.1),
                 },
-            })?
+            })?.into()
         )
     ),
 };
 
-Bool: Expr<'input> = {
+Bool: Expr = {
     "true" => Expr::Bool(true),
     "false" => Expr::Bool(false),
 };
 
-Null: Expr<'input> = {
+Null: Expr = {
     "null" => Expr::Null,
 };
 
-Ident: Expr<'input> = {
+Ident: Expr = {
     String,
     Bool,
     Null,

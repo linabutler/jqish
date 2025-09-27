@@ -8,9 +8,26 @@ license = "Apache-2.0 OR MIT"
 readme = "README.md"
 
 [dependencies]
+allocative = { version = "0.3", optional = true }
+compact_str = "0.8"
+either = { version = "1", optional = true }
 lalrpop-util = { version = "0.19.2", features = [], default-features = false }
-thiserror = "1"
 itertools = "0.13"
+once_cell = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+starlark = { version = "0.13", optional = true }
+thiserror = "1"
 
 [build-dependencies]
 lalrpop = { version = "0.19.2", features = [], default-features = false }
+
+[features]
+default = ["starlark"]
+allocative = ["dep:allocative", "allocative/compact_str"]
+starlark = [
+    "allocative",
+    "dep:either",
+    "dep:once_cell",
+    "dep:serde_json",
+    "dep:starlark",
+]

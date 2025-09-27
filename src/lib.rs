@@ -10,4 +10,7 @@ pub mod error;
 pub mod lexer;
 pub mod parser;
 
+#[cfg(feature = "starlark")]
+pub mod starlark;
+
 pub use parser::{Expr, parse};
