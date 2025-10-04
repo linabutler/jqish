@@ -8,7 +8,7 @@ use lalrpop_util::ParseError;
 use crate::{
     error::{SpannedError, LexicalError},
     lexer::Token,
-    parser::{unquote, Expr, Number, Int},
+    parser::{unquote, Expr, Pattern, Number, Int},
 };
 
 grammar<'input>(text: &'input str);
@@ -19,6 +19,7 @@ extern {
 
     enum Token<'input> {
         "//" => Token::Alt,
+        "?//" => Token::Alternation,
         "==" => Token::Equal,
         "!=" => Token::NotEqual,
         "<=" => Token::LessEqual,
@@ -65,8 +66,8 @@ extern {
 pub Top = Expr;
 
 Expr: Expr<'input> = {
-    <value:Expr> "as" "$" <name:"ident"> "|" <expr:PipeExpr> => {
-        Expr::Block(name, value.into(), expr.into())
+    <value:Expr> "as" <patterns:Patterns> "|" <expr:PipeExpr> => {
+        Expr::Block(patterns, value.into(), expr.into())
     },
     PipeExpr,
 };
@@ -204,6 +205,39 @@ Ident: Expr<'input> = {
         )
     ),
     "ident" => Expr::String(<>.into()),
+};
+
+Patterns: Pattern<'input> = {
+    <rep:Patterns> "?//" <pat:Pattern> => Pattern::Alternative(rep.into(), pat.into()),
+    Pattern,
+};
+
+Pattern: Pattern<'input> = {
+    "$" <"ident"> => Pattern::Variable(<>),
+    "[" <ArrayPatterns> "]" => Pattern::Array(<>),
+    "{" <ObjectPatterns> "}" => Pattern::Object(<>),
+};
+
+ArrayPatterns: Vec<Pattern<'input>> = {
+    <pattern:Pattern> => vec![pattern],
+    <mut patterns:ArrayPatterns> "," <pattern:Pattern> => {
+        patterns.push(pattern);
+        patterns
+    }
+};
+
+ObjectPatterns: Vec<(Expr<'input>, Pattern<'input>)> = {
+    <pair:ObjectPattern> => vec![pair],
+    <mut patterns:ObjectPatterns> "," <pair:ObjectPattern> => {
+        patterns.push(pair);
+        patterns
+    }
+};
+
+ObjectPattern: (Expr<'input>, Pattern<'input>) = {
+    <key:Ident> ":" <pattern:Pattern> => (key, pattern),
+    "(" <key:Expr> ")" ":" <pattern:Pattern> => (key, pattern),
+    "$" <name:"ident"> => (Expr::String(<>.into()), Pattern::Variable(<>)),
 };
 
 CommaSeparated<T>: Vec<T> = {

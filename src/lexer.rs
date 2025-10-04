@@ -11,6 +11,7 @@ use super::error::{LexicalError, SpannedError};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Token<'input> {
     Alt,          // //
+    Alternation,  // ?//
     Equal,        // ==
     NotEqual,     // !=
     LessEqual,    // <=
@@ -200,33 +201,36 @@ impl<'input> Lexer<'input> {
         let (start, token, end) = match (
             self.cursor.peek_nth(0).copied()?,
             self.cursor.peek_nth(1).copied(),
+            self.cursor.peek_nth(2).copied(),
         ) {
-            ((start, '/'), Some((end, '/'))) => (start, Token::Alt, end),
-            ((start, '='), Some((end, '='))) => (start, Token::Equal, end),
-            ((start, '!'), Some((end, '='))) => (start, Token::NotEqual, end),
-            ((start, '<'), Some((end, '='))) => (start, Token::LessEqual, end),
-            ((start, '>'), Some((end, '='))) => (start, Token::GreaterEqual, end),
+            ((start, '?'), Some((_, '/')), Some((end, '/'))) => (start, Token::Alternation, end),
 
-            ((at, '|'), _) => (at, Token::Pipe, at),
-            ((at, '<'), _) => (at, Token::Less, at),
-            ((at, '>'), _) => (at, Token::Greater, at),
-            ((at, '+'), _) => (at, Token::Plus, at),
-            ((at, '-'), _) => (at, Token::Minus, at),
-            ((at, '*'), _) => (at, Token::Multiply, at),
-            ((at, '/'), _) => (at, Token::Divide, at),
-            ((at, '%'), _) => (at, Token::Modulo, at),
-            ((at, '?'), _) => (at, Token::Question, at),
-            ((at, '.'), _) => (at, Token::Dot, at),
-            ((at, '['), _) => (at, Token::LeftBracket, at),
-            ((at, ']'), _) => (at, Token::RightBracket, at),
-            ((at, '{'), _) => (at, Token::LeftBrace, at),
-            ((at, '}'), _) => (at, Token::RightBrace, at),
-            ((at, '('), _) => (at, Token::LeftParen, at),
-            ((at, ')'), _) => (at, Token::RightParen, at),
-            ((at, ':'), _) => (at, Token::Colon, at),
-            ((at, ';'), _) => (at, Token::Semicolon, at),
-            ((at, ','), _) => (at, Token::Comma, at),
-            ((at, '$'), _) => (at, Token::Dollar, at),
+            ((start, '/'), Some((end, '/')), _) => (start, Token::Alt, end),
+            ((start, '='), Some((end, '=')), _) => (start, Token::Equal, end),
+            ((start, '!'), Some((end, '=')), _) => (start, Token::NotEqual, end),
+            ((start, '<'), Some((end, '=')), _) => (start, Token::LessEqual, end),
+            ((start, '>'), Some((end, '=')), _) => (start, Token::GreaterEqual, end),
+
+            ((at, '|'), _, _) => (at, Token::Pipe, at),
+            ((at, '<'), _, _) => (at, Token::Less, at),
+            ((at, '>'), _, _) => (at, Token::Greater, at),
+            ((at, '+'), _, _) => (at, Token::Plus, at),
+            ((at, '-'), _, _) => (at, Token::Minus, at),
+            ((at, '*'), _, _) => (at, Token::Multiply, at),
+            ((at, '/'), _, _) => (at, Token::Divide, at),
+            ((at, '%'), _, _) => (at, Token::Modulo, at),
+            ((at, '?'), _, _) => (at, Token::Question, at),
+            ((at, '.'), _, _) => (at, Token::Dot, at),
+            ((at, '['), _, _) => (at, Token::LeftBracket, at),
+            ((at, ']'), _, _) => (at, Token::RightBracket, at),
+            ((at, '{'), _, _) => (at, Token::LeftBrace, at),
+            ((at, '}'), _, _) => (at, Token::RightBrace, at),
+            ((at, '('), _, _) => (at, Token::LeftParen, at),
+            ((at, ')'), _, _) => (at, Token::RightParen, at),
+            ((at, ':'), _, _) => (at, Token::Colon, at),
+            ((at, ';'), _, _) => (at, Token::Semicolon, at),
+            ((at, ','), _, _) => (at, Token::Comma, at),
+            ((at, '$'), _, _) => (at, Token::Dollar, at),
 
             _ => return None,
         };

@@ -517,11 +517,28 @@ pub enum Expr<'a> {
     Call(&'a str, Vec<Expr<'a>>),
 
     /// A block with a variable declaration and a following expression,
-    /// `expr as $name | expr`.
-    Block(&'a str, Box<Expr<'a>>, Box<Expr<'a>>),
+    /// `expr as $name | expr` or `expr as pattern | expr`.
+    Block(Pattern<'a>, Box<Expr<'a>>, Box<Expr<'a>>),
 
     /// A variable binding, `$name`.
     Binding(&'a str),
+}
+
+/// A pattern for destructuring assignment.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern<'a> {
+    /// A simple variable binding, `$name`.
+    Variable(&'a str),
+
+    /// Array destructuring pattern, `[$first, $second, ...]`.
+    Array(Vec<Pattern<'a>>),
+
+    /// Object destructuring pattern, `{key1: $var1, key2: $var2, ...}`.
+    Object(Vec<(Expr<'a>, Pattern<'a>)>),
+
+    /// Alternative patterns, `pat1 ?// pat2 ?// pat3`.
+    /// If the first pattern fails to match, try the next one.
+    Alternative(Box<Pattern<'a>>, Box<Pattern<'a>>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -2344,5 +2361,349 @@ mod tests {
             result,
             Expr::Negate(Expr::Negate(Expr::Number(Int(7).into()).into()).into())
         );
+    }
+
+    #[test]
+    fn test_simple_variable_destructuring() {
+        let result = parse(". as $var | $var").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Variable("var"),
+                Expr::Identity.into(),
+                Expr::Binding("var").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_array_destructuring() {
+        let result = parse(". as [$first, $second] | $first + $second").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Array(vec![
+                    Pattern::Variable("first"),
+                    Pattern::Variable("second")
+                ]),
+                Expr::Identity.into(),
+                Expr::Add(
+                    Expr::Binding("first").into(),
+                    Expr::Binding("second").into()
+                )
+                .into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_object_destructuring_simple() {
+        let result = parse(". as {name: $n, age: $a} | $n").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Object(vec![
+                    (Expr::String("name".into()), Pattern::Variable("n")),
+                    (Expr::String("age".into()), Pattern::Variable("a"))
+                ]),
+                Expr::Identity.into(),
+                Expr::Binding("n").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_object_destructuring_shorthand_rejected() {
+        // jq doesn't support shorthand syntax like {name, age} - it requires explicit bindings
+        let result = parse(". as {name, age} | name");
+        assert!(
+            result.is_err(),
+            "Shorthand syntax should be rejected to match jq behavior"
+        );
+    }
+
+    #[test]
+    fn test_object_destructuring_with_binding_shorthand() {
+        let result = parse(". as {$name, age: $a} | $name").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Object(vec![
+                    (Expr::String("name".into()), Pattern::Variable("name")),
+                    (Expr::String("age".into()), Pattern::Variable("a"))
+                ]),
+                Expr::Identity.into(),
+                Expr::Binding("name").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_nested_array_destructuring() {
+        let result = parse(". as [[$x, $y], $z] | $x + $y + $z").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Array(vec![
+                    Pattern::Array(vec![Pattern::Variable("x"), Pattern::Variable("y")]),
+                    Pattern::Variable("z")
+                ]),
+                Expr::Identity.into(),
+                Expr::Add(
+                    Expr::Add(Expr::Binding("x").into(), Expr::Binding("y").into()).into(),
+                    Expr::Binding("z").into()
+                )
+                .into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_nested_object_destructuring() {
+        let result = parse(". as {user: {name: $n, age: $a}} | $n").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Object(vec![(
+                    Expr::String("user".into()),
+                    Pattern::Object(vec![
+                        (Expr::String("name".into()), Pattern::Variable("n")),
+                        (Expr::String("age".into()), Pattern::Variable("a"))
+                    ])
+                )]),
+                Expr::Identity.into(),
+                Expr::Binding("n").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_mixed_nested_destructuring() {
+        let result = parse(". as {realnames: [$first, $second], posts: $p} | $first").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Object(vec![
+                    (
+                        Expr::String("realnames".into()),
+                        Pattern::Array(vec![
+                            Pattern::Variable("first"),
+                            Pattern::Variable("second")
+                        ])
+                    ),
+                    (Expr::String("posts".into()), Pattern::Variable("p"))
+                ]),
+                Expr::Identity.into(),
+                Expr::Binding("first").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_object_destructuring_with_computed_key() {
+        let result = parse(r#". as {("key"): $val} | $val"#).unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Object(vec![(Expr::String("key".into()), Pattern::Variable("val"))]),
+                Expr::Identity.into(),
+                Expr::Binding("val").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_empty_destructuring_patterns_rejected() {
+        // jq doesn't support empty patterns
+        let result = parse(". as [] | .");
+        assert!(
+            result.is_err(),
+            "Empty array patterns should be rejected to match jq behavior"
+        );
+
+        let result = parse(". as {} | .");
+        assert!(
+            result.is_err(),
+            "Empty object patterns should be rejected to match jq behavior"
+        );
+    }
+
+    #[test]
+    fn test_complex_destructuring_example() {
+        let result = parse(
+            r#".users | map(. as {name: $n, profile: {age: $a, settings: [$theme, $lang]}} | {name: $n, age: $a, theme: $theme})"#
+        ).unwrap();
+
+        // This is a complex expression, let's just verify it parses without error
+        // and has the expected top-level structure
+        match result {
+            Expr::Pipe(left, right) => {
+                assert_eq!(
+                    *left,
+                    Expr::Index(Expr::Identity.into(), Expr::String("users".into()).into())
+                );
+                match *right {
+                    Expr::Call(name, args) => {
+                        assert_eq!(name, "map");
+                        assert_eq!(args.len(), 1);
+                        // The argument should be a Block expression with nested patterns
+                        match &args[0] {
+                            Expr::Block(pattern, _, _) => {
+                                match pattern {
+                                    Pattern::Object(pairs) => {
+                                        assert_eq!(pairs.len(), 2);
+                                        // Verify the structure exists
+                                        assert_eq!(pairs[0].0, Expr::String("name".into()));
+                                        assert_eq!(pairs[1].0, Expr::String("profile".into()));
+                                    }
+                                    _ => panic!("Expected object pattern"),
+                                }
+                            }
+                            _ => panic!("Expected Block expression"),
+                        }
+                    }
+                    _ => panic!("Expected Call expression"),
+                }
+            }
+            _ => panic!("Expected Pipe expression"),
+        }
+    }
+
+    #[test]
+    fn test_simple_destructuring_alternative() {
+        let result = parse(". as $var ?// {value: $var} | $var").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Alternative(
+                    Pattern::Variable("var").into(),
+                    Pattern::Object(vec![(
+                        Expr::String("value".into()),
+                        Pattern::Variable("var")
+                    )])
+                    .into()
+                ),
+                Expr::Identity.into(),
+                Expr::Binding("var").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_multiple_destructuring_alternatives() {
+        let result = parse(". as $x ?// [$x] ?// {value: $x} | $x").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Alternative(
+                    Pattern::Alternative(
+                        Pattern::Variable("x").into(),
+                        Pattern::Array(vec![Pattern::Variable("x")]).into()
+                    )
+                    .into(),
+                    Pattern::Object(vec![(Expr::String("value".into()), Pattern::Variable("x"))])
+                        .into()
+                ),
+                Expr::Identity.into(),
+                Expr::Binding("x").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_array_destructuring_alternatives() {
+        let result = parse(". as [$x, $y] ?// [$x] | $x").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Alternative(
+                    Pattern::Array(vec![Pattern::Variable("x"), Pattern::Variable("y")]).into(),
+                    Pattern::Array(vec![Pattern::Variable("x")]).into()
+                ),
+                Expr::Identity.into(),
+                Expr::Binding("x").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_object_destructuring_alternatives() {
+        let result = parse(". as {name: $n, age: $a} ?// {name: $n} | $n").unwrap();
+        assert_eq!(
+            result,
+            Expr::Block(
+                Pattern::Alternative(
+                    Pattern::Object(vec![
+                        (Expr::String("name".into()), Pattern::Variable("n")),
+                        (Expr::String("age".into()), Pattern::Variable("a"))
+                    ])
+                    .into(),
+                    Pattern::Object(vec![(Expr::String("name".into()), Pattern::Variable("n"))])
+                        .into()
+                ),
+                Expr::Identity.into(),
+                Expr::Binding("n").into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_nested_alternatives_with_mixed_patterns() {
+        let result = parse(". as {users: [$u1, $u2]} ?// {user: $u1} ?// $u1 | $u1").unwrap();
+
+        // Verify the top-level structure
+        match result {
+            Expr::Block(pattern, value_expr, body_expr) => {
+                assert_eq!(*value_expr, Expr::Identity);
+                assert_eq!(*body_expr, Expr::Binding("u1"));
+
+                // Verify the pattern structure
+                match pattern {
+                    Pattern::Alternative(left, right) => {
+                        match (left.as_ref(), right.as_ref()) {
+                            (
+                                Pattern::Alternative(inner_left, inner_right),
+                                Pattern::Variable("u1"),
+                            ) => {
+                                // First alternative: {users: [$u1, $u2]}
+                                match inner_left.as_ref() {
+                                    Pattern::Object(pairs) => {
+                                        assert_eq!(pairs.len(), 1);
+                                        assert_eq!(pairs[0].0, Expr::String("users".into()));
+                                        match &pairs[0].1 {
+                                            Pattern::Array(vars) => {
+                                                assert_eq!(vars.len(), 2);
+                                                assert_eq!(vars[0], Pattern::Variable("u1"));
+                                                assert_eq!(vars[1], Pattern::Variable("u2"));
+                                            }
+                                            _ => panic!("Expected array pattern"),
+                                        }
+                                    }
+                                    _ => panic!("Expected object pattern"),
+                                }
+
+                                // Second alternative: {user: $u1}
+                                match inner_right.as_ref() {
+                                    Pattern::Object(pairs) => {
+                                        assert_eq!(pairs.len(), 1);
+                                        assert_eq!(pairs[0].0, Expr::String("user".into()));
+                                        assert_eq!(pairs[0].1, Pattern::Variable("u1"));
+                                    }
+                                    _ => panic!("Expected object pattern"),
+                                }
+                            }
+                            _ => panic!("Expected nested alternative structure"),
+                        }
+                    }
+                    _ => panic!("Expected alternative pattern"),
+                }
+            }
+            _ => panic!("Expected Block expression"),
+        }
+    }
+
+    #[test]
+    fn test_destructuring_example_from_manual() {
+        let result = parse(".resources as {$id, $kind, events: {$user_id, $ts}} ?// {$id, $kind, events: [{$user_id, $ts}]} | {$user_id, $kind, $id, $ts}").unwrap();
     }
 }
