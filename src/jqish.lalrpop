@@ -3,14 +3,12 @@
 
 //! A LALRPOP grammar for the `jqish` language.
 
-use std::str::FromStr;
-
 use lalrpop_util::ParseError;
 
 use crate::{
     error::{SpannedError, LexicalError},
     lexer::Token,
-    parser::{unquote, Expr, Number},
+    parser::{unquote, Expr, Number, Int},
 };
 
 grammar<'input>(text: &'input str);
@@ -20,7 +18,7 @@ extern {
     type Error = SpannedError<LexicalError>;
 
     enum Token<'input> {
-        "//" => Token::Alternative,
+        "//" => Token::Alt,
         "==" => Token::Equal,
         "!=" => Token::NotEqual,
         "<=" => Token::LessEqual,
@@ -45,8 +43,10 @@ extern {
         ":" => Token::Colon,
         ";" => Token::Semicolon,
         "," => Token::Comma,
+        "$" => Token::Dollar,
 
         "and" => Token::And,
+        "as" => Token::As,
         "or" => Token::Or,
         "not" => Token::Not,
         "true" => Token::True,
@@ -62,13 +62,22 @@ extern {
 // Arranged in order of precedence, lowest (binds looser)
 // to highest (binds tighter).
 
-pub Expr: Expr<'input> = {
-    <lhs:Expr> "|" <rhs:OrExpr> => Expr::Pipe(lhs.into(), rhs.into()),
-    AlternativeExpr,
+pub Top = Expr;
+
+Expr: Expr<'input> = {
+    <value:Expr> "as" "$" <name:"ident"> "|" <expr:PipeExpr> => {
+        Expr::Block(name, value.into(), expr.into())
+    },
+    PipeExpr,
 };
 
-AlternativeExpr: Expr<'input> = {
-    <lhs:AlternativeExpr> "//" <rhs:OrExpr> => Expr::Alternative(lhs.into(), rhs.into()),
+PipeExpr: Expr<'input> = {
+    <lhs:PipeExpr> "|" <rhs:AltExpr> => Expr::Pipe(lhs.into(), rhs.into()),
+    AltExpr,
+};
+
+AltExpr: Expr<'input> = {
+    <lhs:AltExpr> "//" <rhs:OrExpr> => Expr::Alt(lhs.into(), rhs.into()),
     OrExpr,
 };
 
@@ -113,8 +122,8 @@ PrefixExpr: Expr<'input> = {
 
 PostfixExpr: Expr<'input> = {
     <expr:PostfixExpr> "." <key:Ident> => Expr::Index(expr.into(), key.into()),
-    <expr:PostfixExpr> "[" <index:AlternativeExpr> "]" => Expr::Index(expr.into(), index.into()),
-    <expr:PostfixExpr> "[" <start:AlternativeExpr?> ":" <end:AlternativeExpr?> "]" => {
+    <expr:PostfixExpr> "[" <index:AltExpr> "]" => Expr::Index(expr.into(), index.into()),
+    <expr:PostfixExpr> "[" <start:AltExpr?> ":" <end:AltExpr?> "]" => {
         Expr::Slice(expr.into(), start.map(Box::new), end.map(Box::new))
     },
     <expr:PostfixExpr> "?" => Expr::Opt(expr.into()),
@@ -123,6 +132,7 @@ PostfixExpr: Expr<'input> = {
 
 Atom: Expr<'input> = {
     "." => Expr::Identity,
+    "$" <"ident"> => Expr::Binding(<>.into()),
 
     "." <Ident> => Expr::Index(Expr::Identity.into(), <>.into()),
 
@@ -130,11 +140,12 @@ Atom: Expr<'input> = {
     "[" <CommaSeparated<Expr>> "]" => Expr::Array(<>),
     "{" <CommaSeparated<Member>> "}" => Expr::Object(<>),
 
-    <name:"ident"> "(" <args:SemicolonSeparated<Expr>> ")" => Expr::Call(name, args),
+    <name:"ident"> "(" <args:SemicolonSeparated<Expr>> ")" => Expr::Call(name.into(), args),
+    <name:"ident"> => Expr::Call(name.into(), vec![]),
 
     <start:@L> <n:"number"> <end:@R> =>? Ok(
         Expr::Number(
-            Number::from_str(n).map_err(|err| ParseError::User {
+            n.parse::<Number>().map_err(|err| ParseError::User {
                 error: SpannedError {
                     error: err.into(),
                     location: (start, end),
@@ -150,7 +161,8 @@ Atom: Expr<'input> = {
 Member: (Expr<'input>, Expr<'input>) = {
     <key:Ident> ":" <value:Expr> => (key, value),
     "(" <key:Expr> ")" ":" <value:Expr> => (key, value),
-    <Ident> => (<>.clone(), <>),
+    <Ident> => (<>.clone(), Expr::Index(Expr::Identity.into(), <>.into())),
+    "$" <"ident"> => (Expr::String(<>.into()), Expr::Binding(<>.into())),
 };
 
 String: Expr<'input> = {
@@ -181,13 +193,14 @@ Ident: Expr<'input> = {
     Null,
     <start:@L> <n:"number"> <end:@R> =>? Ok(
         Expr::Number(
-            Number::from_int_str(n)
+            n.parse::<Int>()
                 .map_err(|err| ParseError::User {
                     error: SpannedError {
                         error: err.into(),
                         location: (start, end),
                     },
                 })?
+                .into()
         )
     ),
     "ident" => Expr::String(<>.into()),

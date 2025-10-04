@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Lina Butler
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use std::{borrow::Cow, str::FromStr};
+use std::{borrow::Cow, fmt::Display, str::FromStr};
 
 use lalrpop_util::ParseError as LalrpopParseError;
 
@@ -11,20 +11,25 @@ use super::{
 };
 
 mod grammar {
+    // `lalrpop-util` 0.21.0+ supports specifying attributes directly on the generated module,
+    // but we're pinned to 0.19.2, which `starlark_syntax` uses. Once Starlark upgrades its
+    // `lalrpop` version, we can specify `#![allow(clippy::all)]` directly on the module,
+    // and remove this nested module.
+
     #![allow(clippy::all)]
 
     use lalrpop_util::lalrpop_mod;
 
-    lalrpop_mod!(jqish);
+    lalrpop_mod!(grammar, "/jqish.rs");
 
-    pub use self::jqish::ExprParser;
+    pub use grammar::*;
 }
 
 /// Parses a string containing a `jq`-like filter expression
 /// into an expression tree.
 pub fn parse(input: &str) -> Result<Expr<'_>, SpannedError<LexicalError>> {
     let lexer = Lexer::new(input);
-    let parser = grammar::ExprParser::new();
+    let parser = grammar::TopParser::new();
     parser.parse(input, lexer).map_err(|err| match err {
         LalrpopParseError::ExtraToken {
             token: (start, _, end),
@@ -73,12 +78,12 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int, Float}};
     /// let expr = parse("42").unwrap();
-    /// assert_eq!(expr, Expr::Number(Number::Int(42)));
+    /// assert_eq!(expr, Expr::Number(Int(42).into()));
     ///
     /// let expr = parse("9.42").unwrap();
-    /// assert_eq!(expr, Expr::Number(Number::Float(9.42)));
+    /// assert_eq!(expr, Expr::Number(Float(9.42).into()));
     /// ```
     Number(Number),
 
@@ -127,15 +132,15 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("[]").unwrap();
     /// assert_eq!(expr, Expr::Array(vec![]));
     ///
     /// let expr = parse("[1, 2, 3]").unwrap();
     /// assert_eq!(expr, Expr::Array(vec![
-    ///     Expr::Number(Number::Int(1)),
-    ///     Expr::Number(Number::Int(2)),
-    ///     Expr::Number(Number::Int(3)),
+    ///     Expr::Number(Int(1).into()),
+    ///     Expr::Number(Int(2).into()),
+    ///     Expr::Number(Int(3).into()),
     /// ]));
     /// ```
     Array(Vec<Expr<'a>>),
@@ -146,14 +151,14 @@ pub enum Expr<'a> {
     ///
     /// ```rust
     /// # use std::borrow::Cow;
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("{}").unwrap();
     /// assert_eq!(expr, Expr::Object(vec![]));
     ///
     /// let expr = parse("{name, age: 30}").unwrap();
     /// assert_eq!(expr, Expr::Object(vec![
-    ///     (Expr::String(Cow::Borrowed("name")), Expr::String(Cow::Borrowed("name"))),
-    ///     (Expr::String(Cow::Borrowed("age")), Expr::Number(Number::Int(30))),
+    ///     (Expr::String(Cow::Borrowed("name")), Expr::Index(Expr::Identity.into(), Expr::String(Cow::Borrowed("name")).into())),
+    ///     (Expr::String(Cow::Borrowed("age")), Expr::Number(Int(30).into())),
     /// ]));
     /// ```
     Object(Vec<(Expr<'a>, Expr<'a>)>),
@@ -168,14 +173,14 @@ pub enum Expr<'a> {
     /// # use std::borrow::Cow;
     /// let expr = parse(".user | .name").unwrap();
     /// assert_eq!(expr, Expr::Pipe(
-    ///     Box::new(Expr::Index(
-    ///         Box::new(Expr::Identity),
-    ///         Box::new(Expr::String(Cow::Borrowed("user")))
-    ///     )),
-    ///     Box::new(Expr::Index(
-    ///         Box::new(Expr::Identity),
-    ///         Box::new(Expr::String(Cow::Borrowed("name")))
-    ///     ))
+    ///     Expr::Index(
+    ///         Expr::Identity.into(),
+    ///         Expr::String(Cow::Borrowed("user")).into()
+    ///     ).into(),
+    ///     Expr::Index(
+    ///         Expr::Identity.into(),
+    ///         Expr::String(Cow::Borrowed("name")).into()
+    ///     ).into()
     /// ));
     /// ```
     Pipe(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -187,8 +192,8 @@ pub enum Expr<'a> {
     /// # use jqish::{parse, Expr};
     /// let expr = parse("true or false").unwrap();
     /// assert_eq!(expr, Expr::Or(
-    ///     Box::new(Expr::Bool(true)),
-    ///     Box::new(Expr::Bool(false))
+    ///     Expr::Bool(true).into(),
+    ///     Expr::Bool(false).into()
     /// ));
     /// ```
     Or(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -201,18 +206,18 @@ pub enum Expr<'a> {
     /// # use jqish::{parse, Expr};
     /// let expr = parse("true and false").unwrap();
     /// assert_eq!(expr, Expr::And(
-    ///     Box::new(Expr::Bool(true)),
-    ///     Box::new(Expr::Bool(false))
+    ///     Expr::Bool(true).into(),
+    ///     Expr::Bool(false).into()
     /// ));
     ///
     /// // `and` binds tighter than `or`.
     /// let expr = parse("true and false or null").unwrap();
     /// assert_eq!(expr, Expr::Or(
     ///     Box::new(Expr::And(
-    ///         Box::new(Expr::Bool(true)),
-    ///         Box::new(Expr::Bool(false))
+    ///         Expr::Bool(true).into(),
+    ///         Expr::Bool(false).into()
     ///     )),
-    ///     Box::new(Expr::Null)
+    ///     Expr::Null.into()
     /// ));
     /// ```
     And(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -226,26 +231,26 @@ pub enum Expr<'a> {
     /// # use jqish::{parse, Expr};
     /// # use std::borrow::Cow;
     /// let expr = parse(".name // 'Unknown'").unwrap();
-    /// assert_eq!(expr, Expr::Alternative(
-    ///     Box::new(Expr::Index(
-    ///         Box::new(Expr::Identity),
-    ///         Box::new(Expr::String(Cow::Borrowed("name")))
-    ///     )),
-    ///     Box::new(Expr::String(Cow::Borrowed("Unknown")))
+    /// assert_eq!(expr, Expr::Alt(
+    ///     Expr::Index(
+    ///         Expr::Identity.into(),
+    ///         Expr::String(Cow::Borrowed("name")).into()
+    ///     ).into(),
+    ///     Expr::String(Cow::Borrowed("Unknown")).into()
     /// ));
     /// ```
-    Alternative(Box<Expr<'a>>, Box<Expr<'a>>),
+    Alt(Box<Expr<'a>>, Box<Expr<'a>>),
 
     /// An equality expression, `a == b`.
     ///
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 == 2").unwrap();
     /// assert_eq!(expr, Expr::Equal(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     Equal(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -255,11 +260,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 != 2").unwrap();
     /// assert_eq!(expr, Expr::NotEqual(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     NotEqual(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -269,11 +274,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 < 2").unwrap();
     /// assert_eq!(expr, Expr::Less(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     Less(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -283,11 +288,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 > 2").unwrap();
     /// assert_eq!(expr, Expr::Greater(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     Greater(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -297,11 +302,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 <= 2").unwrap();
     /// assert_eq!(expr, Expr::LessEqual(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     LessEqual(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -311,11 +316,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 >= 2").unwrap();
     /// assert_eq!(expr, Expr::GreaterEqual(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     GreaterEqual(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -325,11 +330,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 + 2").unwrap();
     /// assert_eq!(expr, Expr::Add(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     Add(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -339,11 +344,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 - 2").unwrap();
     /// assert_eq!(expr, Expr::Subtract(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     Subtract(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -353,11 +358,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 * 2").unwrap();
     /// assert_eq!(expr, Expr::Multiply(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     Multiply(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -367,11 +372,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 / 2").unwrap();
     /// assert_eq!(expr, Expr::Divide(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     Divide(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -381,11 +386,11 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("1 % 2").unwrap();
     /// assert_eq!(expr, Expr::Modulo(
-    ///     Box::new(Expr::Number(Number::Int(1))),
-    ///     Box::new(Expr::Number(Number::Int(2)))
+    ///     Expr::Number(Int(1).into()).into(),
+    ///     Expr::Number(Int(2).into()).into()
     /// ));
     /// ```
     Modulo(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -395,9 +400,9 @@ pub enum Expr<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse("-42").unwrap();
-    /// assert_eq!(expr, Expr::Negate(Box::new(Expr::Number(Number::Int(42)))));
+    /// assert_eq!(expr, Expr::Negate(Expr::Number(Int(42).into()).into()));
     /// ```
     Negate(Box<Expr<'a>>),
 
@@ -408,13 +413,13 @@ pub enum Expr<'a> {
     /// ```rust
     /// # use jqish::{parse, Expr};
     /// let expr = parse("not true").unwrap();
-    /// assert_eq!(expr, Expr::Not(Box::new(Expr::Bool(true))));
+    /// assert_eq!(expr, Expr::Not(Expr::Bool(true).into()));
     ///
     /// // `not` binds tighter than `and` or `or`.
     /// let expr = parse("not true and false").unwrap();
     /// assert_eq!(expr, Expr::And(
-    ///     Box::new(Expr::Not(Box::new(Expr::Bool(true)))),
-    ///     Box::new(Expr::Bool(false))
+    ///     Expr::Not(Expr::Bool(true).into()).into(),
+    ///     Expr::Bool(false).into()
     /// ));
     /// ```
     Not(Box<Expr<'a>>),
@@ -430,10 +435,10 @@ pub enum Expr<'a> {
     /// # use std::borrow::Cow;
     /// let expr = parse(".name?").unwrap();
     /// assert_eq!(expr, Expr::Opt(
-    ///     Box::new(Expr::Index(
-    ///         Box::new(Expr::Identity),
-    ///         Box::new(Expr::String(Cow::Borrowed("name"))),
-    ///     ))
+    ///     Expr::Index(
+    ///         Expr::Identity.into(),
+    ///         Expr::String(Cow::Borrowed("name")).into(),
+    ///     ).into()
     /// ));
     /// ```
     Opt(Box<Expr<'a>>),
@@ -444,18 +449,18 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// # use std::borrow::Cow;
     /// let expr = parse(".[0]").unwrap();
     /// assert_eq!(expr, Expr::Index(
-    ///     Box::new(Expr::Identity),
-    ///     Box::new(Expr::Number(Number::Int(0)))
+    ///     Expr::Identity.into(),
+    ///     Expr::Number(Int(0).into()).into()
     /// ));
     ///
     /// let expr = parse(".name").unwrap();
     /// assert_eq!(expr, Expr::Index(
-    ///     Box::new(Expr::Identity),
-    ///     Box::new(Expr::String(Cow::Borrowed("name")))
+    ///     Expr::Identity.into(),
+    ///     Expr::String(Cow::Borrowed("name")).into()
     /// ));
     /// ```
     Index(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -466,26 +471,26 @@ pub enum Expr<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use jqish::{parse, Expr, parser::Number};
+    /// # use jqish::{parse, Expr, parser::{Number, Int}};
     /// let expr = parse(".[1:3]").unwrap();
     /// assert_eq!(expr, Expr::Slice(
-    ///     Box::new(Expr::Identity),
-    ///     Some(Box::new(Expr::Number(Number::Int(1)))),
-    ///     Some(Box::new(Expr::Number(Number::Int(3))))
+    ///     Expr::Identity.into(),
+    ///     Some(Expr::Number(Int(1).into()).into()),
+    ///     Some(Expr::Number(Int(3).into()).into())
     /// ));
     ///
     /// let expr = parse(".[2:]").unwrap();
     /// assert_eq!(expr, Expr::Slice(
-    ///     Box::new(Expr::Identity),
-    ///     Some(Box::new(Expr::Number(Number::Int(2)))),
+    ///     Expr::Identity.into(),
+    ///     Some(Expr::Number(Int(2).into()).into()),
     ///     None
     /// ));
     ///
     /// let expr = parse(".[:5]").unwrap();
     /// assert_eq!(expr, Expr::Slice(
-    ///     Box::new(Expr::Identity),
+    ///     Expr::Identity.into(),
     ///     None,
-    ///     Some(Box::new(Expr::Number(Number::Int(5))))
+    ///     Some(Expr::Number(Int(5).into()).into())
     /// ));
     /// ```
     Slice(Box<Expr<'a>>, Option<Box<Expr<'a>>>, Option<Box<Expr<'a>>>),
@@ -504,23 +509,70 @@ pub enum Expr<'a> {
     /// let expr = parse("map(.name)").unwrap();
     /// assert_eq!(expr, Expr::Call("map", vec![
     ///     Expr::Index(
-    ///         Box::new(Expr::Identity),
-    ///         Box::new(Expr::String(Cow::Borrowed("name"))),
+    ///         Expr::Identity.into(),
+    ///         Expr::String(Cow::Borrowed("name")).into(),
     ///     ),
     /// ]));
     /// ```
     Call(&'a str, Vec<Expr<'a>>),
+
+    /// A block with a variable declaration and a following expression,
+    /// `expr as $name | expr`.
+    Block(&'a str, Box<Expr<'a>>, Box<Expr<'a>>),
+
+    /// A variable binding, `$name`.
+    Binding(&'a str),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Int(pub i64);
+
+impl Display for Int {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for Int {
+    type Err = NumberError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self).map_err(|_| Self::Err::Int)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct Float(pub f64);
+
+impl Display for Float {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for Float {
+    type Err = NumberError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self).map_err(|_| Self::Err::Float)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Number {
-    Int(i64),
-    Float(f64),
+    Int(Int),
+    Float(Float),
 }
 
-impl Number {
-    pub fn from_int_str(s: &str) -> Result<Self, NumberError> {
-        Ok(Self::Int(s.parse().map_err(|_| NumberError::NotInt)?))
+impl From<Int> for Number {
+    fn from(value: Int) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl From<Float> for Number {
+    fn from(value: Float) -> Self {
+        Self::Float(value)
     }
 }
 
@@ -528,8 +580,10 @@ impl FromStr for Number {
     type Err = NumberError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::from_int_str(s)
-            .or_else(|_| s.parse().map(Self::Float).map_err(|_| Self::Err::NotFloat))
+        s.parse()
+            .map(Self::Int)
+            .or_else(|_| s.parse().map(Self::Float))
+            .map_err(|_| Self::Err::Number)
     }
 }
 
@@ -578,10 +632,12 @@ pub struct BadEscapeError(char);
 
 #[derive(Debug, thiserror::Error)]
 pub enum NumberError {
-    #[error("expected an integer here")]
-    NotInt,
+    #[error("can't parse this value as an integer")]
+    Int,
+    #[error("can't parse this value as a float")]
+    Float,
     #[error("can't parse this value as a number")]
-    NotFloat,
+    Number,
 }
 
 #[cfg(test)]
@@ -597,7 +653,7 @@ mod tests {
     #[test]
     fn test_parse_number() {
         let result = parse("42").unwrap();
-        assert_eq!(result, Expr::Number(Number::Int(42)));
+        assert_eq!(result, Expr::Number(Int(42).into()));
     }
 
     #[test]
@@ -611,10 +667,7 @@ mod tests {
         let result = parse(".foo").unwrap();
         assert_eq!(
             result,
-            Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String("foo".into()))
-            )
+            Expr::Index(Expr::Identity.into(), Expr::String("foo".into()).into())
         );
     }
 
@@ -624,11 +677,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Pipe(
-                Box::new(Expr::Identity),
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("foo".into()))
-                ))
+                Expr::Identity.into(),
+                Expr::Index(Expr::Identity.into(), Expr::String("foo".into()).into()).into()
             )
         );
     }
@@ -639,11 +689,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("user".into()))
-                )),
-                Box::new(Expr::String("name".into()))
+                Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into()).into(),
+                Expr::String("name".into()).into()
             )
         );
     }
@@ -659,36 +706,43 @@ mod tests {
             Expr::Object(vec![
                 (
                     Expr::String("status".into()),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("status".into())),
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("status".into()).into(),)
                 ),
                 (
                     Expr::String("error".into()),
-                    Expr::Opt(Box::new(Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("body".into())),
-                        )),
-                        Box::new(Expr::String("error".into()))
-                    ))),
+                    Expr::Opt(
+                        Expr::Index(
+                            Expr::Index(Expr::Identity.into(), Expr::String("body".into()).into(),)
+                                .into(),
+                            Expr::String("error".into()).into()
+                        )
+                        .into()
+                    ),
                 ),
                 (
                     Expr::String("apps".into()),
-                    Expr::Opt(Box::new(Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Opt(Box::new(Expr::Index(
-                                Box::new(Expr::Index(
-                                    Box::new(Expr::Identity),
-                                    Box::new(Expr::String("body".into())),
-                                )),
-                                Box::new(Expr::String("data".into())),
-                            )))),
-                            Box::new(Expr::String("project".into())),
-                        )),
-                        Box::new(Expr::String("supportedApps".into()))
-                    )))
+                    Expr::Opt(
+                        Expr::Index(
+                            Expr::Index(
+                                Expr::Opt(
+                                    Expr::Index(
+                                        Expr::Index(
+                                            Expr::Identity.into(),
+                                            Expr::String("body".into()).into(),
+                                        )
+                                        .into(),
+                                        Expr::String("data".into()).into(),
+                                    )
+                                    .into()
+                                )
+                                .into(),
+                                Expr::String("project".into()).into(),
+                            )
+                            .into(),
+                            Expr::String("supportedApps".into()).into()
+                        )
+                        .into()
+                    )
                 )
             ])
         );
@@ -700,20 +754,20 @@ mod tests {
         assert_eq!(
             result,
             Expr::Pipe(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("response".into()))
-                    )),
-                    Box::new(Expr::String("data".into()))
-                )),
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("user".into()))
-                    )),
-                    Box::new(Expr::String("name".into()))
-                )),
+                Expr::Index(
+                    Expr::Index(
+                        Expr::Identity.into(),
+                        Expr::String("response".into()).into()
+                    )
+                    .into(),
+                    Expr::String("data".into()).into()
+                )
+                .into(),
+                Expr::Index(
+                    Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into()).into(),
+                    Expr::String("name".into()).into()
+                )
+                .into(),
             )
         );
     }
@@ -739,11 +793,12 @@ mod tests {
         assert_eq!(
             result,
             Expr::GreaterEqual(
-                Box::new(Expr::Subtract(
-                    Box::new(Expr::Negate(Box::new(Expr::Number(Number::Float(6.0))))),
-                    Box::new(Expr::Number(Number::Float(1.0)))
-                )),
-                Box::new(Expr::Number(Number::Int(5)))
+                Expr::Subtract(
+                    Expr::Negate(Expr::Number(Float(6.0).into()).into()).into(),
+                    Expr::Number(Float(1.0).into()).into()
+                )
+                .into(),
+                Expr::Number(Int(5).into()).into()
             )
         );
     }
@@ -761,30 +816,30 @@ mod tests {
                 .unwrap();
         assert_eq!(
             result,
-            Expr::Alternative(
-                Box::new(Expr::Alternative(
-                    Box::new(Expr::Or(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("username".into()))
-                        )),
-                        Box::new(Expr::And(
-                            Box::new(Expr::Bool(true)),
-                            Box::new(Expr::Bool(false)),
-                        )),
-                    )),
-                    Box::new(Expr::Or(
-                        Box::new(Expr::And(
-                            Box::new(Expr::Index(
-                                Box::new(Expr::Identity),
-                                Box::new(Expr::String("user".into()))
-                            )),
-                            Box::new(Expr::Bool(false))
-                        )),
-                        Box::new(Expr::Bool(true))
-                    )),
-                )),
-                Box::new(Expr::String("not available".into()))
+            Expr::Alt(
+                Expr::Alt(
+                    Expr::Or(
+                        Expr::Index(
+                            Expr::Identity.into(),
+                            Expr::String("username".into()).into()
+                        )
+                        .into(),
+                        Expr::And(Expr::Bool(true).into(), Expr::Bool(false).into()).into(),
+                    )
+                    .into(),
+                    Expr::Or(
+                        Expr::And(
+                            Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
+                                .into(),
+                            Expr::Bool(false).into()
+                        )
+                        .into(),
+                        Expr::Bool(true).into()
+                    )
+                    .into(),
+                )
+                .into(),
+                Expr::String("not available".into()).into()
             )
         );
     }
@@ -795,9 +850,9 @@ mod tests {
         assert_eq!(
             result,
             Expr::Slice(
-                Box::new(Expr::Identity),
-                Some(Box::new(Expr::Number(Number::Int(1)))),
-                Some(Box::new(Expr::Number(Number::Int(3))))
+                Expr::Identity.into(),
+                Some(Expr::Number(Int(1).into()).into()),
+                Some(Expr::Number(Int(3).into()).into())
             )
         );
 
@@ -805,8 +860,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Slice(
-                Box::new(Expr::Identity),
-                Some(Box::new(Expr::Number(Number::Int(2)))),
+                Expr::Identity.into(),
+                Some(Expr::Number(Int(2).into()).into()),
                 None
             )
         );
@@ -815,14 +870,14 @@ mod tests {
         assert_eq!(
             result,
             Expr::Slice(
-                Box::new(Expr::Identity),
+                Expr::Identity.into(),
                 None,
-                Some(Box::new(Expr::Number(Number::Int(5))))
+                Some(Expr::Number(Int(5).into()).into())
             )
         );
 
         let result = parse(".[:]").unwrap();
-        assert_eq!(result, Expr::Slice(Box::new(Expr::Identity), None, None));
+        assert_eq!(result, Expr::Slice(Expr::Identity.into(), None, None));
     }
 
     #[test]
@@ -831,12 +886,9 @@ mod tests {
         assert_eq!(
             result,
             Expr::Slice(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("data".into()))
-                )),
-                Some(Box::new(Expr::Number(Number::Int(1)))),
-                Some(Box::new(Expr::Number(Number::Int(3))))
+                Expr::Index(Expr::Identity.into(), Expr::String("data".into()).into()).into(),
+                Some(Expr::Number(Int(1).into()).into()),
+                Some(Expr::Number(Int(3).into()).into())
             )
         );
 
@@ -844,11 +896,14 @@ mod tests {
         assert_eq!(
             result,
             Expr::Slice(
-                Box::new(Expr::Identity),
-                Some(Box::new(Expr::Subtract(
-                    Box::new(Expr::Call("length", vec![])),
-                    Box::new(Expr::Number(Number::Int(2)))
-                ))),
+                Expr::Identity.into(),
+                Some(
+                    Expr::Subtract(
+                        Expr::Call("length", vec![]).into(),
+                        Expr::Number(Int(2).into()).into()
+                    )
+                    .into()
+                ),
                 None
             )
         );
@@ -860,20 +915,24 @@ mod tests {
         assert_eq!(
             result,
             Expr::Subtract(
-                Box::new(Expr::Add(
-                    Box::new(Expr::Number(Number::Int(1))),
-                    Box::new(Expr::Multiply(
-                        Box::new(Expr::Number(Number::Int(2))),
-                        Box::new(Expr::Number(Number::Int(3)))
-                    ))
-                )),
-                Box::new(Expr::Modulo(
-                    Box::new(Expr::Divide(
-                        Box::new(Expr::Number(Number::Int(4))),
-                        Box::new(Expr::Number(Number::Int(5)))
-                    )),
-                    Box::new(Expr::Number(Number::Int(6)))
-                ))
+                Expr::Add(
+                    Expr::Number(Int(1).into()).into(),
+                    Expr::Multiply(
+                        Expr::Number(Int(2).into()).into(),
+                        Expr::Number(Int(3).into()).into()
+                    )
+                    .into()
+                )
+                .into(),
+                Expr::Modulo(
+                    Expr::Divide(
+                        Expr::Number(Int(4).into()).into(),
+                        Expr::Number(Int(5).into()).into()
+                    )
+                    .into(),
+                    Expr::Number(Int(6).into()).into()
+                )
+                .into()
             )
         );
 
@@ -883,11 +942,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Or(
-                Box::new(Expr::And(
-                    Box::new(Expr::Bool(true)),
-                    Box::new(Expr::Bool(false))
-                )),
-                Box::new(Expr::Null)
+                Expr::And(Expr::Bool(true).into(), Expr::Bool(false).into()).into(),
+                Expr::Null.into()
             )
         );
     }
@@ -898,36 +954,48 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("user".into()))
-                        )),
-                        Box::new(Expr::String("profile".into()))
-                    )),
-                    Box::new(Expr::String("settings".into()))
-                )),
-                Box::new(Expr::String("theme".into()))
+                Expr::Index(
+                    Expr::Index(
+                        Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
+                            .into(),
+                        Expr::String("profile".into()).into()
+                    )
+                    .into(),
+                    Expr::String("settings".into()).into()
+                )
+                .into(),
+                Expr::String("theme".into()).into()
             )
         );
 
         let result = parse(".user?.profile.settings?.theme?").unwrap();
         assert_eq!(
             result,
-            Expr::Opt(Box::new(Expr::Index(
-                Box::new(Expr::Opt(Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Opt(Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("user".into()))
-                        )))),
-                        Box::new(Expr::String("profile".into()))
-                    )),
-                    Box::new(Expr::String("settings".into()))
-                )))),
-                Box::new(Expr::String("theme".into()))
-            )))
+            Expr::Opt(
+                Expr::Index(
+                    Expr::Opt(
+                        Expr::Index(
+                            Expr::Index(
+                                Expr::Opt(
+                                    Expr::Index(
+                                        Expr::Identity.into(),
+                                        Expr::String("user".into()).into()
+                                    )
+                                    .into()
+                                )
+                                .into(),
+                                Expr::String("profile".into()).into()
+                            )
+                            .into(),
+                            Expr::String("settings".into()).into()
+                        )
+                        .into()
+                    )
+                    .into(),
+                    Expr::String("theme".into()).into()
+                )
+                .into()
+            )
         );
     }
 
@@ -937,14 +1005,12 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::Number(Number::Int(0)))
-                    )),
-                    Box::new(Expr::Number(Number::Int(1)))
-                )),
-                Box::new(Expr::Number(Number::Int(2)))
+                Expr::Index(
+                    Expr::Index(Expr::Identity.into(), Expr::Number(Int(0).into()).into()).into(),
+                    Expr::Number(Int(1).into()).into()
+                )
+                .into(),
+                Expr::Number(Int(2).into()).into()
             )
         );
 
@@ -952,63 +1018,74 @@ mod tests {
         assert_eq!(
             result,
             Expr::Slice(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("users".into()))
-                        )),
-                        Box::new(Expr::Number(Number::Int(0)))
-                    )),
-                    Box::new(Expr::String("name".into()))
-                )),
-                Some(Box::new(Expr::Number(Number::Int(0)))),
-                Some(Box::new(Expr::Number(Number::Int(3))))
+                Expr::Index(
+                    Expr::Index(
+                        Expr::Index(Expr::Identity.into(), Expr::String("users".into()).into())
+                            .into(),
+                        Expr::Number(Int(0).into()).into()
+                    )
+                    .into(),
+                    Expr::String("name".into()).into()
+                )
+                .into(),
+                Some(Expr::Number(Int(0).into()).into()),
+                Some(Expr::Number(Int(3).into()).into())
             )
         );
 
         let result = parse(".[0]?[1]?.field?").unwrap();
         assert_eq!(
             result,
-            Expr::Opt(Box::new(Expr::Index(
-                Box::new(Expr::Opt(Box::new(Expr::Index(
-                    Box::new(Expr::Opt(Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::Number(Number::Int(0)))
-                    )))),
-                    Box::new(Expr::Number(Number::Int(1)))
-                )))),
-                Box::new(Expr::String("field".into()))
-            )))
+            Expr::Opt(
+                Expr::Index(
+                    Expr::Opt(
+                        Expr::Index(
+                            Expr::Opt(
+                                Expr::Index(
+                                    Expr::Identity.into(),
+                                    Expr::Number(Int(0).into()).into()
+                                )
+                                .into()
+                            )
+                            .into(),
+                            Expr::Number(Int(1).into()).into()
+                        )
+                        .into()
+                    )
+                    .into(),
+                    Expr::String("field".into()).into()
+                )
+                .into()
+            )
         );
     }
 
     #[test]
     fn test_comprehensive_slicing() {
         let test_cases = vec![
-            (".[:]", Expr::Slice(Box::new(Expr::Identity), None, None)),
+            (".[:]", Expr::Slice(Expr::Identity.into(), None, None)),
             (
                 ".[1:]",
                 Expr::Slice(
-                    Box::new(Expr::Identity),
-                    Some(Box::new(Expr::Number(Number::Int(1)))),
+                    Expr::Identity.into(),
+                    Some(Expr::Number(Int(1).into()).into()),
                     None,
                 ),
             ),
             (
                 ".[:5]",
                 Expr::Slice(
-                    Box::new(Expr::Identity),
+                    Expr::Identity.into(),
                     None,
-                    Some(Box::new(Expr::Number(Number::Int(5)))),
+                    Some(Expr::Number(Int(5).into()).into()),
                 ),
             ),
             (
                 ".[1:5]",
                 Expr::Slice(
-                    Box::new(Expr::Identity),
-                    Some(Box::new(Expr::Number(Number::Int(1)))),
-                    Some(Box::new(Expr::Number(Number::Int(5)))),
+                    Expr::Identity.into(),
+                    Some(Expr::Number(Int(1).into()).into()),
+                    Some(Expr::Number(Int(5).into()).into()),
                 ),
             ),
         ];
@@ -1022,12 +1099,15 @@ mod tests {
         assert_eq!(
             result,
             Expr::Slice(
-                Box::new(Expr::Identity),
-                Some(Box::new(Expr::Subtract(
-                    Box::new(Expr::Call("length", vec![])),
-                    Box::new(Expr::Number(Number::Int(1)))
-                ))),
-                Some(Box::new(Expr::Call("length", vec![])))
+                Expr::Identity.into(),
+                Some(
+                    Expr::Subtract(
+                        Expr::Call("length", vec![]).into(),
+                        Expr::Number(Int(1).into()).into()
+                    )
+                    .into()
+                ),
+                Some(Expr::Call("length", vec![]).into())
             )
         );
     }
@@ -1043,14 +1123,8 @@ mod tests {
             Expr::Call(
                 "map",
                 vec![
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("name".into()))
-                    ),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("age".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("age".into()).into())
                 ]
             )
         );
@@ -1063,8 +1137,8 @@ mod tests {
                 vec![Expr::Call(
                     "length",
                     vec![Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("name".into()))
+                        Expr::Identity.into(),
+                        Expr::String("name".into()).into()
                     )]
                 )]
             )
@@ -1081,30 +1155,22 @@ mod tests {
             Expr::Object(vec![
                 (
                     Expr::String("name".into()),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("user".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
                 ),
                 (
                     Expr::String("full name".into()),
                     Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("user".into()))
-                        )),
-                        Box::new(Expr::String("full_name".into()))
+                        Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
+                            .into(),
+                        Expr::String("full_name".into()).into(),
                     )
                 ),
                 (
                     Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("key-with-dashes".into()))
+                        Expr::Identity.into(),
+                        Expr::String("key-with-dashes".into()).into()
                     ),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("value".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("value".into()).into())
                 )
             ])
         );
@@ -1121,17 +1187,11 @@ mod tests {
                     Expr::Object(vec![
                         (
                             Expr::String("name".into()),
-                            Expr::Index(
-                                Box::new(Expr::Identity),
-                                Box::new(Expr::String("name".into()))
-                            )
+                            Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into())
                         ),
                         (
                             Expr::String("age".into()),
-                            Expr::Index(
-                                Box::new(Expr::Identity),
-                                Box::new(Expr::String("age".into()))
-                            )
+                            Expr::Index(Expr::Identity.into(), Expr::String("age".into()).into())
                         )
                     ])
                 ),
@@ -1146,30 +1206,21 @@ mod tests {
         assert_eq!(
             result,
             Expr::Array(vec![
-                Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("name".into()))
-                ),
+                Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into()),
                 Expr::Add(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("age".into()))
-                    )),
-                    Box::new(Expr::Number(Number::Int(1)))
+                    Expr::Index(Expr::Identity.into(), Expr::String("age".into()).into()).into(),
+                    Expr::Number(Int(1).into()).into()
                 ),
                 Expr::Call(
                     "length",
                     vec![Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("items".into()))
+                        Expr::Identity.into(),
+                        Expr::String("items".into()).into()
                     )]
                 ),
                 Expr::Object(vec![(
                     Expr::String("status".into()),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("active".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("active".into()).into())
                 )])
             ])
         );
@@ -1182,12 +1233,12 @@ mod tests {
             result,
             Expr::Array(vec![
                 Expr::Array(vec![
-                    Expr::Number(Number::Int(1)),
-                    Expr::Number(Number::Int(2))
+                    Expr::Number(Int(1).into()),
+                    Expr::Number(Int(2).into())
                 ]),
                 Expr::Array(vec![
-                    Expr::Number(Number::Int(3)),
-                    Expr::Number(Number::Int(4))
+                    Expr::Number(Int(3).into()),
+                    Expr::Number(Int(4).into())
                 ])
             ])
         );
@@ -1199,27 +1250,29 @@ mod tests {
         assert_eq!(
             result,
             Expr::Pipe(
-                Box::new(Expr::Pipe(
-                    Box::new(Expr::Pipe(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("users".into()))
-                        )),
-                        Box::new(Expr::Call(
+                Expr::Pipe(
+                    Expr::Pipe(
+                        Expr::Index(Expr::Identity.into(), Expr::String("users".into()).into())
+                            .into(),
+                        Expr::Call(
                             "map",
                             vec![Expr::Index(
-                                Box::new(Expr::Identity),
-                                Box::new(Expr::String("name".into()))
+                                Expr::Identity.into(),
+                                Expr::String("name".into()).into()
                             )]
-                        ))
-                    )),
-                    Box::new(Expr::Call("sort", vec![]))
-                )),
-                Box::new(Expr::Slice(
-                    Box::new(Expr::Identity),
-                    Some(Box::new(Expr::Number(Number::Int(0)))),
-                    Some(Box::new(Expr::Number(Number::Int(5))))
-                ))
+                        )
+                        .into()
+                    )
+                    .into(),
+                    Expr::Call("sort", vec![]).into()
+                )
+                .into(),
+                Expr::Slice(
+                    Expr::Identity.into(),
+                    Some(Expr::Number(Int(0).into()).into()),
+                    Some(Expr::Number(Int(5).into()).into())
+                )
+                .into()
             )
         );
 
@@ -1227,14 +1280,12 @@ mod tests {
         assert_eq!(
             result,
             Expr::Pipe(
-                Box::new(Expr::Alternative(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("name".into()))
-                    )),
-                    Box::new(Expr::String("Unknown".into()))
-                )),
-                Box::new(Expr::Call("length", vec![]))
+                Expr::Alt(
+                    Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into()).into(),
+                    Expr::String("Unknown".into()).into()
+                )
+                .into(),
+                Expr::Call("length", vec![]).into()
             )
         );
     }
@@ -1264,12 +1315,12 @@ mod tests {
     #[test]
     fn test_number_formats() {
         let positive_cases = vec![
-            ("42", Expr::Number(Number::Int(42))),
-            ("9.42", Expr::Number(Number::Float(9.42))),
-            ("0", Expr::Number(Number::Int(0))),
-            ("0.5", Expr::Number(Number::Float(0.5))),
-            (".5", Expr::Number(Number::Float(0.5))),
-            ("1e10", Expr::Number(Number::Float(1e10))),
+            ("42", Expr::Number(Int(42).into())),
+            ("9.42", Expr::Number(Float(9.42).into())),
+            ("0", Expr::Number(Int(0).into())),
+            ("0.5", Expr::Number(Float(0.5).into())),
+            (".5", Expr::Number(Float(0.5).into())),
+            ("1e10", Expr::Number(Float(1e10).into())),
         ];
 
         for (input, expected) in positive_cases {
@@ -1278,16 +1329,16 @@ mod tests {
         }
 
         let result = parse("-7").unwrap();
-        assert_eq!(result, Expr::Negate(Box::new(Expr::Number(Number::Int(7)))));
+        assert_eq!(result, Expr::Negate(Expr::Number(Int(7).into()).into()));
 
         let result = parse("-9.42").unwrap();
         assert_eq!(
             result,
-            Expr::Negate(Box::new(Expr::Number(Number::Float(9.42))))
+            Expr::Negate(Expr::Number(Float(9.42).into()).into())
         );
 
         let result = parse("1.5e-3").unwrap();
-        assert_eq!(result, Expr::Number(Number::Float(1.5e-3)));
+        assert_eq!(result, Expr::Number(Float(1.5e-3).into()));
     }
 
     #[test]
@@ -1296,11 +1347,12 @@ mod tests {
         assert_eq!(
             result,
             Expr::Add(
-                Box::new(Expr::Number(Number::Int(1))),
-                Box::new(Expr::Multiply(
-                    Box::new(Expr::Number(Number::Int(2))),
-                    Box::new(Expr::Number(Number::Int(3)))
-                ))
+                Expr::Number(Int(1).into()).into(),
+                Expr::Multiply(
+                    Expr::Number(Int(2).into()).into(),
+                    Expr::Number(Int(3).into()).into()
+                )
+                .into()
             )
         );
 
@@ -1308,11 +1360,12 @@ mod tests {
         assert_eq!(
             result,
             Expr::Multiply(
-                Box::new(Expr::Add(
-                    Box::new(Expr::Number(Number::Int(1))),
-                    Box::new(Expr::Number(Number::Int(2)))
-                )),
-                Box::new(Expr::Number(Number::Int(3)))
+                Expr::Add(
+                    Expr::Number(Int(1).into()).into(),
+                    Expr::Number(Int(2).into()).into()
+                )
+                .into(),
+                Expr::Number(Int(3).into()).into()
             )
         );
 
@@ -1320,14 +1373,12 @@ mod tests {
         assert_eq!(
             result,
             Expr::Add(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("user".into()))
-                    )),
-                    Box::new(Expr::String("age".into()))
-                )),
-                Box::new(Expr::Number(Number::Int(1)))
+                Expr::Index(
+                    Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into()).into(),
+                    Expr::String("age".into()).into()
+                )
+                .into(),
+                Expr::Number(Int(1).into()).into()
             )
         );
     }
@@ -1375,8 +1426,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String("field-with-dashes".into()))
+                Expr::Identity.into(),
+                Expr::String("field-with-dashes".into()).into()
             )
         );
 
@@ -1384,8 +1435,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String("field with spaces".into()))
+                Expr::Identity.into(),
+                Expr::String("field with spaces".into()).into()
             )
         );
 
@@ -1393,27 +1444,27 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String("%@#$^&*()".into()))
+                Expr::Identity.into(),
+                Expr::String("%@#$^&*()".into()).into()
             )
         );
 
         let result = parse(r#"."field-with-dashes"?"#).unwrap();
         assert_eq!(
             result,
-            Expr::Opt(Box::new(Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String("field-with-dashes".into()))
-            )))
+            Expr::Opt(
+                Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String("field-with-dashes".into()).into()
+                )
+                .into()
+            )
         );
 
         let result = parse(r#".user"#).unwrap(); // This works
         assert_eq!(
             result,
-            Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String("user".into()))
-            )
+            Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
         );
     }
 
@@ -1425,17 +1476,11 @@ mod tests {
             Expr::Object(vec![
                 (
                     Expr::String("field-with-dashes".into()),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("value".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("value".into()).into())
                 ),
                 (
                     Expr::String("spaces in key".into()),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("other".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("other".into()).into())
                 )
             ])
         );
@@ -1446,24 +1491,15 @@ mod tests {
             Expr::Object(vec![
                 (
                     Expr::Bool(true),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("yes".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("yes".into()).into())
                 ),
                 (
                     Expr::Bool(false),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("no".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("no".into()).into())
                 ),
                 (
                     Expr::Null,
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("empty".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("empty".into()).into())
                 )
             ])
         );
@@ -1474,27 +1510,19 @@ mod tests {
             Expr::Object(vec![
                 (
                     Expr::String("name".into()),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("user".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
                 ),
                 (
                     Expr::String("full-name".into()),
                     Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("user".into()))
-                        )),
-                        Box::new(Expr::String("name".into()))
+                        Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
+                            .into(),
+                        Expr::String("name".into()).into()
                     )
                 ),
                 (
                     Expr::Bool(true),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("active".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("active".into()).into())
                 )
             ])
         );
@@ -1505,30 +1533,27 @@ mod tests {
         let result = parse(".true").unwrap();
         assert_eq!(
             result,
-            Expr::Index(Box::new(Expr::Identity), Box::new(Expr::Bool(true)))
+            Expr::Index(Expr::Identity.into(), Expr::Bool(true).into())
         );
 
         let result = parse(".false").unwrap();
         assert_eq!(
             result,
-            Expr::Index(Box::new(Expr::Identity), Box::new(Expr::Bool(false)))
+            Expr::Index(Expr::Identity.into(), Expr::Bool(false).into())
         );
 
         let result = parse(".null").unwrap();
         assert_eq!(
             result,
-            Expr::Index(Box::new(Expr::Identity), Box::new(Expr::Null))
+            Expr::Index(Expr::Identity.into(), Expr::Null.into())
         );
 
         let result = parse(".data.true").unwrap();
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("data".into()))
-                )),
-                Box::new(Expr::Bool(true))
+                Expr::Index(Expr::Identity.into(), Expr::String("data".into()).into()).into(),
+                Expr::Bool(true).into()
             )
         );
 
@@ -1536,27 +1561,25 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("config".into()))
-                    )),
-                    Box::new(Expr::Bool(false))
-                )),
-                Box::new(Expr::String("enabled".into()))
+                Expr::Index(
+                    Expr::Index(Expr::Identity.into(), Expr::String("config".into()).into()).into(),
+                    Expr::Bool(false).into()
+                )
+                .into(),
+                Expr::String("enabled".into()).into()
             )
         );
 
         let result = parse(".data.null?").unwrap();
         assert_eq!(
             result,
-            Expr::Opt(Box::new(Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("data".into()))
-                )),
-                Box::new(Expr::Null)
-            )))
+            Expr::Opt(
+                Expr::Index(
+                    Expr::Index(Expr::Identity.into(), Expr::String("data".into()).into()).into(),
+                    Expr::Null.into()
+                )
+                .into()
+            )
         );
 
         let result = parse(r#"{true: .yes, false: .no, null: .empty}"#).unwrap();
@@ -1565,24 +1588,15 @@ mod tests {
             Expr::Object(vec![
                 (
                     Expr::Bool(true),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("yes".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("yes".into()).into())
                 ),
                 (
                     Expr::Bool(false),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("no".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("no".into()).into())
                 ),
                 (
                     Expr::Null,
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("empty".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("empty".into()).into())
                 )
             ])
         );
@@ -1595,13 +1609,14 @@ mod tests {
             result,
             Expr::Object(vec![(
                 Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("response".into()))
-                    )),
-                    Box::new(Expr::String("data".into()))
+                    Expr::Index(
+                        Expr::Identity.into(),
+                        Expr::String("response".into()).into()
+                    )
+                    .into(),
+                    Expr::String("data".into()).into()
                 ),
-                Expr::Number(Number::Int(123))
+                Expr::Number(Int(123).into())
             )])
         );
 
@@ -1610,24 +1625,12 @@ mod tests {
             result,
             Expr::Object(vec![
                 (
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("key1".into()))
-                    ),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("value1".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("key1".into()).into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("value1".into()).into())
                 ),
                 (
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("key2".into()))
-                    ),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("value2".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("key2".into()).into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("value2".into()).into())
                 )
             ])
         );
@@ -1637,22 +1640,15 @@ mod tests {
             result,
             Expr::Object(vec![(
                 Expr::Add(
-                    Box::new(Expr::Add(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("prefix".into()))
-                        )),
-                        Box::new(Expr::String("-".into()))
-                    )),
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("suffix".into()))
-                    ))
+                    Expr::Add(
+                        Expr::Index(Expr::Identity.into(), Expr::String("prefix".into()).into())
+                            .into(),
+                        Expr::String("-".into()).into()
+                    )
+                    .into(),
+                    Expr::Index(Expr::Identity.into(), Expr::String("suffix".into()).into()).into()
                 ),
-                Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("result".into()))
-                )
+                Expr::Index(Expr::Identity.into(), Expr::String("result".into()).into())
             )])
         );
     }
@@ -1663,11 +1659,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("data".into()))
-                )),
-                Box::new(Expr::String("field-name".into()))
+                Expr::Index(Expr::Identity.into(), Expr::String("data".into()).into()).into(),
+                Expr::String("field-name".into()).into()
             )
         );
 
@@ -1675,44 +1668,45 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("user".into()))
-                    )),
-                    Box::new(Expr::String("full-name".into()))
-                )),
-                Box::new(Expr::String("display".into()))
+                Expr::Index(
+                    Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into()).into(),
+                    Expr::String("full-name".into()).into()
+                )
+                .into(),
+                Expr::String("display".into()).into()
             )
         );
 
         let result = parse(r#".data."field-name"?"#).unwrap();
         assert_eq!(
             result,
-            Expr::Opt(Box::new(Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("data".into()))
-                )),
-                Box::new(Expr::String("field-name".into()))
-            )))
+            Expr::Opt(
+                Expr::Index(
+                    Expr::Index(Expr::Identity.into(), Expr::String("data".into()).into()).into(),
+                    Expr::String("field-name".into()).into()
+                )
+                .into()
+            )
         );
 
         let result = parse(r#".response."api-data"."user-info"."email-address""#).unwrap();
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("response".into()))
-                        )),
-                        Box::new(Expr::String("api-data".into()))
-                    )),
-                    Box::new(Expr::String("user-info".into()))
-                )),
-                Box::new(Expr::String("email-address".into()))
+                Expr::Index(
+                    Expr::Index(
+                        Expr::Index(
+                            Expr::Identity.into(),
+                            Expr::String("response".into()).into()
+                        )
+                        .into(),
+                        Expr::String("api-data".into()).into()
+                    )
+                    .into(),
+                    Expr::String("user-info".into()).into()
+                )
+                .into(),
+                Expr::String("email-address".into()).into()
             )
         );
     }
@@ -1722,34 +1716,25 @@ mod tests {
         let result = parse(r#"."""#).unwrap();
         assert_eq!(
             result,
-            Expr::Index(Box::new(Expr::Identity), Box::new(Expr::String("".into())))
+            Expr::Index(Expr::Identity.into(), Expr::String("".into()).into())
         );
 
         let result = parse(r#"."\n\t\r""#).unwrap();
         assert_eq!(
             result,
-            Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String("\n\t\r".into()))
-            )
+            Expr::Index(Expr::Identity.into(), Expr::String("\n\t\r".into()).into())
         );
 
         let result = parse(r#"."123""#).unwrap();
         assert_eq!(
             result,
-            Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String("123".into()))
-            )
+            Expr::Index(Expr::Identity.into(), Expr::String("123".into()).into())
         );
 
         let result = parse(r#".">>=""#).unwrap();
         assert_eq!(
             result,
-            Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String(">>=".into()))
-            )
+            Expr::Index(Expr::Identity.into(), Expr::String(">>=".into()).into())
         );
 
         let result = parse(r#"{"true": .value}"#).unwrap();
@@ -1757,10 +1742,7 @@ mod tests {
             result,
             Expr::Object(vec![(
                 Expr::String("true".into()),
-                Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("value".into()))
-                )
+                Expr::Index(Expr::Identity.into(), Expr::String("value".into()).into())
             )])
         );
     }
@@ -1771,23 +1753,28 @@ mod tests {
         assert_eq!(
             result,
             Expr::Index(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Index(
-                                Box::new(Expr::Index(
-                                    Box::new(Expr::Identity),
-                                    Box::new(Expr::String("api".into()))
-                                )),
-                                Box::new(Expr::String("user-data".into()))
-                            )),
-                            Box::new(Expr::String("profile".into()))
-                        )),
-                        Box::new(Expr::Bool(true))
-                    )),
-                    Box::new(Expr::String("last-login".into()))
-                )),
-                Box::new(Expr::Bool(false))
+                Expr::Index(
+                    Expr::Index(
+                        Expr::Index(
+                            Expr::Index(
+                                Expr::Index(
+                                    Expr::Identity.into(),
+                                    Expr::String("api".into()).into()
+                                )
+                                .into(),
+                                Expr::String("user-data".into()).into()
+                            )
+                            .into(),
+                            Expr::String("profile".into()).into()
+                        )
+                        .into(),
+                        Expr::Bool(true).into()
+                    )
+                    .into(),
+                    Expr::String("last-login".into()).into()
+                )
+                .into(),
+                Expr::Bool(false).into()
             )
         );
 
@@ -1807,57 +1794,48 @@ mod tests {
             Expr::Object(vec![
                 (
                     Expr::String("name".into()),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("user".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
                 ),
                 (
                     Expr::String("full-name".into()),
                     Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("user".into()))
-                        )),
-                        Box::new(Expr::String("display-name".into()))
+                        Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
+                            .into(),
+                        Expr::String("display-name".into()).into()
                     )
                 ),
                 (
                     Expr::Bool(true),
                     Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("settings".into()))
-                        )),
-                        Box::new(Expr::String("enabled".into()))
+                        Expr::Index(
+                            Expr::Identity.into(),
+                            Expr::String("settings".into()).into()
+                        )
+                        .into(),
+                        Expr::String("enabled".into()).into()
                     )
                 ),
                 (
                     Expr::Bool(false),
                     Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("settings".into()))
-                        )),
-                        Box::new(Expr::String("disabled".into()))
+                        Expr::Index(
+                            Expr::Identity.into(),
+                            Expr::String("settings".into()).into()
+                        )
+                        .into(),
+                        Expr::String("disabled".into()).into()
                     )
                 ),
                 (
                     Expr::Null,
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("empty".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("empty".into()).into())
                 ),
                 (
                     Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("computed".into()))
+                        Expr::Identity.into(),
+                        Expr::String("computed".into()).into()
                     ),
-                    Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("dynamic".into()))
-                    )
+                    Expr::Index(Expr::Identity.into(), Expr::String("dynamic".into()).into())
                 )
             ])
         );
@@ -1865,75 +1843,85 @@ mod tests {
         let result = parse(r#".data."user-info"?.true."settings"?.null?"#).unwrap();
         assert_eq!(
             result,
-            Expr::Opt(Box::new(Expr::Index(
-                Box::new(Expr::Opt(Box::new(Expr::Index(
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Opt(Box::new(Expr::Index(
-                            Box::new(Expr::Index(
-                                Box::new(Expr::Identity),
-                                Box::new(Expr::String("data".into()))
-                            )),
-                            Box::new(Expr::String("user-info".into()))
-                        )))),
-                        Box::new(Expr::Bool(true))
-                    )),
-                    Box::new(Expr::String("settings".into()))
-                )))),
-                Box::new(Expr::Null)
-            )))
+            Expr::Opt(
+                Expr::Index(
+                    Expr::Opt(
+                        Expr::Index(
+                            Expr::Index(
+                                Expr::Opt(
+                                    Expr::Index(
+                                        Expr::Index(
+                                            Expr::Identity.into(),
+                                            Expr::String("data".into()).into()
+                                        )
+                                        .into(),
+                                        Expr::String("user-info".into()).into()
+                                    )
+                                    .into()
+                                )
+                                .into(),
+                                Expr::Bool(true).into()
+                            )
+                            .into(),
+                            Expr::String("settings".into()).into()
+                        )
+                        .into()
+                    )
+                    .into(),
+                    Expr::Null.into()
+                )
+                .into()
+            )
         );
     }
 
     #[test]
     fn test_unary_not_operator() {
         let result = parse("not true").unwrap();
-        assert_eq!(result, Expr::Not(Box::new(Expr::Bool(true))));
+        assert_eq!(result, Expr::Not(Expr::Bool(true).into()));
 
         let result = parse("not false").unwrap();
-        assert_eq!(result, Expr::Not(Box::new(Expr::Bool(false))));
+        assert_eq!(result, Expr::Not(Expr::Bool(false).into()));
 
         let result = parse("not null").unwrap();
-        assert_eq!(result, Expr::Not(Box::new(Expr::Null)));
+        assert_eq!(result, Expr::Not(Expr::Null.into()));
 
         let result = parse("not .active").unwrap();
         assert_eq!(
             result,
-            Expr::Not(Box::new(Expr::Index(
-                Box::new(Expr::Identity),
-                Box::new(Expr::String("active".into()))
-            )))
+            Expr::Not(
+                Expr::Index(Expr::Identity.into(), Expr::String("active".into()).into()).into()
+            )
         );
 
         let result = parse("not not true").unwrap();
-        assert_eq!(
-            result,
-            Expr::Not(Box::new(Expr::Not(Box::new(Expr::Bool(true)))))
-        );
+        assert_eq!(result, Expr::Not(Expr::Not(Expr::Bool(true).into()).into()));
 
         let result = parse("not (.age > 18)").unwrap();
         assert_eq!(
             result,
-            Expr::Not(Box::new(Expr::Greater(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("age".into()))
-                )),
-                Box::new(Expr::Number(Number::Int(18)))
-            )))
+            Expr::Not(
+                Expr::Greater(
+                    Expr::Index(Expr::Identity.into(), Expr::String("age".into()).into()).into(),
+                    Expr::Number(Int(18).into()).into()
+                )
+                .into()
+            )
         );
 
         let result = parse("not .active and .verified").unwrap();
         assert_eq!(
             result,
             Expr::And(
-                Box::new(Expr::Not(Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("active".into()))
-                )))),
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("verified".into()))
-                ))
+                Expr::Not(
+                    Expr::Index(Expr::Identity.into(), Expr::String("active".into()).into()).into()
+                )
+                .into(),
+                Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String("verified".into()).into()
+                )
+                .into()
             )
         );
 
@@ -1941,8 +1929,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::And(
-                Box::new(Expr::Not(Box::new(Expr::Bool(true)))),
-                Box::new(Expr::Bool(false))
+                Expr::Not(Expr::Bool(true).into()).into(),
+                Expr::Bool(false).into()
             )
         );
 
@@ -1950,8 +1938,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Or(
-                Box::new(Expr::Not(Box::new(Expr::Bool(true)))),
-                Box::new(Expr::Bool(false))
+                Expr::Not(Expr::Bool(true).into()).into(),
+                Expr::Bool(false).into()
             )
         );
     }
@@ -1963,7 +1951,7 @@ mod tests {
             result,
             Expr::Object(vec![(
                 Expr::String("name".into()),
-                Expr::String("name".into())
+                Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into())
             )])
         );
 
@@ -1971,9 +1959,18 @@ mod tests {
         assert_eq!(
             result,
             Expr::Object(vec![
-                (Expr::String("name".into()), Expr::String("name".into())),
-                (Expr::String("age".into()), Expr::String("age".into())),
-                (Expr::String("active".into()), Expr::String("active".into()))
+                (
+                    Expr::String("name".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into())
+                ),
+                (
+                    Expr::String("age".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("age".into()).into())
+                ),
+                (
+                    Expr::String("active".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("active".into()).into())
+                )
             ])
         );
 
@@ -1981,18 +1978,22 @@ mod tests {
         assert_eq!(
             result,
             Expr::Object(vec![
-                (Expr::String("name".into()), Expr::String("name".into())),
+                (
+                    Expr::String("name".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into())
+                ),
                 (
                     Expr::String("age".into()),
                     Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("user".into()))
-                        )),
-                        Box::new(Expr::String("age".into()))
+                        Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
+                            .into(),
+                        Expr::String("age".into()).into()
                     )
                 ),
-                (Expr::String("active".into()), Expr::String("active".into()))
+                (
+                    Expr::String("active".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("active".into()).into())
+                )
             ])
         );
 
@@ -2001,7 +2002,10 @@ mod tests {
             result,
             Expr::Object(vec![(
                 Expr::String("user-name".into()),
-                Expr::String("user-name".into())
+                Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String("user-name".into()).into()
+                )
             )])
         );
 
@@ -2009,9 +2013,18 @@ mod tests {
         assert_eq!(
             result,
             Expr::Object(vec![
-                (Expr::Bool(true), Expr::Bool(true)),
-                (Expr::Bool(false), Expr::Bool(false)),
-                (Expr::Null, Expr::Null)
+                (
+                    Expr::Bool(true),
+                    Expr::Index(Expr::Identity.into(), Expr::Bool(true).into())
+                ),
+                (
+                    Expr::Bool(false),
+                    Expr::Index(Expr::Identity.into(), Expr::Bool(false).into())
+                ),
+                (
+                    Expr::Null,
+                    Expr::Index(Expr::Identity.into(), Expr::Null.into())
+                )
             ])
         );
 
@@ -2021,31 +2034,38 @@ mod tests {
         assert_eq!(
             result,
             Expr::Object(vec![
-                (Expr::String("name".into()), Expr::String("name".into())),
+                (
+                    Expr::String("name".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into())
+                ),
                 (
                     Expr::String("full-name".into()),
                     Expr::Index(
-                        Box::new(Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("user".into()))
-                        )),
-                        Box::new(Expr::String("name".into()))
+                        Expr::Index(Expr::Identity.into(), Expr::String("user".into()).into())
+                            .into(),
+                        Expr::String("name".into()).into()
                     )
                 ),
-                (Expr::String("active".into()), Expr::String("active".into())),
+                (
+                    Expr::String("active".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("active".into()).into())
+                ),
                 (
                     Expr::String("count".into()),
                     Expr::Call(
                         "length",
                         vec![Expr::Index(
-                            Box::new(Expr::Identity),
-                            Box::new(Expr::String("items".into()))
+                            Expr::Identity.into(),
+                            Expr::String("items".into()).into()
                         )]
                     )
                 ),
                 (
                     Expr::String("verified".into()),
-                    Expr::String("verified".into())
+                    Expr::Index(
+                        Expr::Identity.into(),
+                        Expr::String("verified".into()).into()
+                    )
                 )
             ])
         );
@@ -2057,15 +2077,21 @@ mod tests {
                 (
                     Expr::String("user".into()),
                     Expr::Object(vec![
-                        (Expr::String("name".into()), Expr::String("name".into())),
-                        (Expr::String("age".into()), Expr::String("age".into()))
+                        (
+                            Expr::String("name".into()),
+                            Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into())
+                        ),
+                        (
+                            Expr::String("age".into()),
+                            Expr::Index(Expr::Identity.into(), Expr::String("age".into()).into())
+                        )
                     ])
                 ),
                 (
                     Expr::String("settings".into()),
                     Expr::Object(vec![(
                         Expr::String("theme".into()),
-                        Expr::String("theme".into())
+                        Expr::Index(Expr::Identity.into(), Expr::String("theme".into()).into())
                     )])
                 )
             ])
@@ -2077,29 +2103,25 @@ mod tests {
         let result = parse("not -5").unwrap();
         assert_eq!(
             result,
-            Expr::Not(Box::new(Expr::Negate(Box::new(Expr::Number(Number::Int(
-                5
-            ))))))
+            Expr::Not(Expr::Negate(Expr::Number(Int(5).into()).into()).into())
         );
 
         let result = parse("-not true").unwrap();
         assert_eq!(
             result,
-            Expr::Negate(Box::new(Expr::Not(Box::new(Expr::Bool(true)))))
+            Expr::Negate(Expr::Not(Expr::Bool(true).into()).into())
         );
 
         let result = parse("-(not true)").unwrap();
         assert_eq!(
             result,
-            Expr::Negate(Box::new(Expr::Not(Box::new(Expr::Bool(true)))))
+            Expr::Negate(Expr::Not(Expr::Bool(true).into()).into())
         );
 
         let result = parse("not (-5)").unwrap();
         assert_eq!(
             result,
-            Expr::Not(Box::new(Expr::Negate(Box::new(Expr::Number(Number::Int(
-                5
-            ))))))
+            Expr::Not(Expr::Negate(Expr::Number(Int(5).into()).into()).into())
         );
     }
 
@@ -2115,14 +2137,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Object(vec![(
-                Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("dynamic".into()))
-                ),
-                Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("value".into()))
-                )
+                Expr::Index(Expr::Identity.into(), Expr::String("dynamic".into()).into()),
+                Expr::Index(Expr::Identity.into(), Expr::String("value".into()).into())
             )])
         );
 
@@ -2133,8 +2149,14 @@ mod tests {
         assert_eq!(
             result,
             Expr::Object(vec![
-                (Expr::String("name".into()), Expr::String("name".into())),
-                (Expr::String("age".into()), Expr::String("age".into()))
+                (
+                    Expr::String("name".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into())
+                ),
+                (
+                    Expr::String("age".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("age".into()).into())
+                )
             ])
         );
     }
@@ -2187,8 +2209,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::And(
-                Box::new(Expr::Bool(true)),
-                Box::new(Expr::Not(Box::new(Expr::Bool(false))))
+                Expr::Bool(true).into(),
+                Expr::Not(Expr::Bool(false).into()).into()
             )
         );
 
@@ -2196,8 +2218,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Or(
-                Box::new(Expr::Not(Box::new(Expr::Bool(true)))),
-                Box::new(Expr::Bool(false))
+                Expr::Not(Expr::Bool(true).into()).into(),
+                Expr::Bool(false).into()
             )
         );
 
@@ -2205,10 +2227,8 @@ mod tests {
         assert_eq!(
             result,
             Expr::Add(
-                Box::new(Expr::Not(Box::new(Expr::Negate(Box::new(Expr::Number(
-                    Number::Int(5)
-                )))))),
-                Box::new(Expr::Number(Number::Int(3)))
+                Expr::Not(Expr::Negate(Expr::Number(Int(5).into()).into()).into()).into(),
+                Expr::Number(Int(3).into()).into()
             )
         );
 
@@ -2216,14 +2236,15 @@ mod tests {
         assert_eq!(
             result,
             Expr::Pipe(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("active".into()))
-                )),
-                Box::new(Expr::Not(Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("disabled".into()))
-                ))))
+                Expr::Index(Expr::Identity.into(), Expr::String("active".into()).into()).into(),
+                Expr::Not(
+                    Expr::Index(
+                        Expr::Identity.into(),
+                        Expr::String("disabled".into()).into()
+                    )
+                    .into()
+                )
+                .into()
             )
         );
     }
@@ -2236,18 +2257,30 @@ mod tests {
             Expr::Object(vec![
                 (
                     Expr::String("active".into()),
-                    Expr::Not(Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("disabled".into()))
-                    )))
+                    Expr::Not(
+                        Expr::Index(
+                            Expr::Identity.into(),
+                            Expr::String("disabled".into()).into()
+                        )
+                        .into()
+                    )
                 ),
-                (Expr::String("name".into()), Expr::String("name".into())),
+                (
+                    Expr::String("name".into()),
+                    Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into())
+                ),
                 (
                     Expr::String("verified".into()),
-                    Expr::Not(Box::new(Expr::Not(Box::new(Expr::Index(
-                        Box::new(Expr::Identity),
-                        Box::new(Expr::String("checked".into()))
-                    )))))
+                    Expr::Not(
+                        Expr::Not(
+                            Expr::Index(
+                                Expr::Identity.into(),
+                                Expr::String("checked".into()).into()
+                            )
+                            .into()
+                        )
+                        .into()
+                    )
                 )
             ])
         );
@@ -2256,23 +2289,27 @@ mod tests {
         assert_eq!(
             result,
             Expr::Pipe(
-                Box::new(Expr::Index(
-                    Box::new(Expr::Identity),
-                    Box::new(Expr::String("users".into()))
-                )),
-                Box::new(Expr::Call(
+                Expr::Index(Expr::Identity.into(), Expr::String("users".into()).into()).into(),
+                Expr::Call(
                     "map",
                     vec![Expr::Object(vec![
-                        (Expr::String("name".into()), Expr::String("name".into())),
+                        (
+                            Expr::String("name".into()),
+                            Expr::Index(Expr::Identity.into(), Expr::String("name".into()).into())
+                        ),
                         (
                             Expr::String("active".into()),
-                            Expr::Not(Box::new(Expr::Index(
-                                Box::new(Expr::Identity),
-                                Box::new(Expr::String("disabled".into()))
-                            )))
+                            Expr::Not(
+                                Expr::Index(
+                                    Expr::Identity.into(),
+                                    Expr::String("disabled".into()).into()
+                                )
+                                .into()
+                            )
                         )
                     ])]
-                ))
+                )
+                .into()
             )
         );
     }
@@ -2282,36 +2319,30 @@ mod tests {
         let result = parse("- -5").unwrap();
         assert_eq!(
             result,
-            Expr::Negate(Box::new(Expr::Negate(Box::new(Expr::Number(Number::Int(
-                5
-            ))))))
+            Expr::Negate(Expr::Negate(Expr::Number(Int(5).into()).into()).into())
         );
 
         let result = parse("- - -42").unwrap();
         assert_eq!(
             result,
-            Expr::Negate(Box::new(Expr::Negate(Box::new(Expr::Negate(Box::new(
-                Expr::Number(Number::Int(42))
-            ))))))
+            Expr::Negate(
+                Expr::Negate(Expr::Negate(Expr::Number(Int(42).into()).into()).into()).into()
+            )
         );
 
         let result = parse("1 + - -3").unwrap();
         assert_eq!(
             result,
             Expr::Add(
-                Box::new(Expr::Number(Number::Int(1))),
-                Box::new(Expr::Negate(Box::new(Expr::Negate(Box::new(
-                    Expr::Number(Number::Int(3))
-                )))))
+                Expr::Number(Int(1).into()).into(),
+                Expr::Negate(Expr::Negate(Expr::Number(Int(3).into()).into()).into()).into()
             )
         );
 
         let result = parse("-(- 7)").unwrap();
         assert_eq!(
             result,
-            Expr::Negate(Box::new(Expr::Negate(Box::new(Expr::Number(Number::Int(
-                7
-            ))))))
+            Expr::Negate(Expr::Negate(Expr::Number(Int(7).into()).into()).into())
         );
     }
 }

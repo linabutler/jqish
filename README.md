@@ -81,10 +81,9 @@ Because `jqish` is designed to be embedded in a larger Rust program, it's missin
 
 * **Iterators** and **generators**, including recursive descent: `.[]`, `.foo[]`, `.. | .a?`. Since a `jqish` expression can only return a single result, there's no way to represent the output of an iterator, generator, or recursive descent.
 * **Control flow**: `if-then-else`, `while`, `try-catch`, and recursion. You can write more complex transformations that need these constructs in Rust.
-* **Variables**: `... as $ident`
 * **Assignment**
 * **Path expressions**
-* **Destructuring alternatives**, because these require variables to work: `.[] as {$a, $b, c: {$d, $e}} ?// {$a, $b, c: [{$d, $e}]} | {$a, $b, $d, $e}`
+* **Destructuring alternatives**: `.[] as {$a, $b, c: {$d, $e}} ?// {$a, $b, c: [{$d, $e}]} | {$a, $b, $d, $e}`
 * **String interpolation**: `"Hello \(name)"`
 * Defining your own **functions**
 * Modules

@@ -10,7 +10,7 @@ use super::error::{LexicalError, SpannedError};
 /// A token produced by the [`Lexer`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Token<'input> {
-    Alternative,  // //
+    Alt,          // //
     Equal,        // ==
     NotEqual,     // !=
     LessEqual,    // <=
@@ -35,6 +35,7 @@ pub enum Token<'input> {
     Colon,        // :
     Semicolon,    // ;
     Comma,        // ,
+    Dollar,       // $
 
     And,   // and
     Or,    // or
@@ -42,6 +43,7 @@ pub enum Token<'input> {
     True,  // true
     False, // false
     Null,  // null
+    As,    // as
 
     Number(&'input str), // Integer or floating-point number.
     String(&'input str), // Single or double-quoted string.
@@ -199,7 +201,7 @@ impl<'input> Lexer<'input> {
             self.cursor.peek_nth(0).copied()?,
             self.cursor.peek_nth(1).copied(),
         ) {
-            ((start, '/'), Some((end, '/'))) => (start, Token::Alternative, end),
+            ((start, '/'), Some((end, '/'))) => (start, Token::Alt, end),
             ((start, '='), Some((end, '='))) => (start, Token::Equal, end),
             ((start, '!'), Some((end, '='))) => (start, Token::NotEqual, end),
             ((start, '<'), Some((end, '='))) => (start, Token::LessEqual, end),
@@ -224,6 +226,7 @@ impl<'input> Lexer<'input> {
             ((at, ':'), _) => (at, Token::Colon, at),
             ((at, ';'), _) => (at, Token::Semicolon, at),
             ((at, ','), _) => (at, Token::Comma, at),
+            ((at, '$'), _) => (at, Token::Dollar, at),
 
             _ => return None,
         };
@@ -253,6 +256,7 @@ impl<'input> Lexer<'input> {
             "true" => Token::True,
             "false" => Token::False,
             "null" => Token::Null,
+            "as" => Token::As,
             other => Token::Ident(other),
         })
     }
