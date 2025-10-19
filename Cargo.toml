@@ -11,6 +11,7 @@ readme = "README.md"
 lalrpop-util = { version = "0.19.2", features = [], default-features = false }
 thiserror = "1"
 itertools = "0.13"
+logos = "0.12"
 
 [build-dependencies]
 lalrpop = { version = "0.19.2", features = [], default-features = false }

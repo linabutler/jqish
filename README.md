@@ -84,7 +84,6 @@ Because `jqish` is designed to be embedded in a larger Rust program, it's missin
 * **Assignment**
 * **Path expressions**
 * **Destructuring alternatives**: `.[] as {$a, $b, c: {$d, $e}} ?// {$a, $b, c: [{$d, $e}]} | {$a, $b, $d, $e}`
-* **String interpolation**: `"Hello \(name)"`
 * Defining your own **functions**
 * Modules
 * Comments

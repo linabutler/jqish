@@ -7,11 +7,11 @@ use lalrpop_util::ParseError;
 
 use crate::{
     error::{SpannedError, LexicalError},
-    lexer::Token,
-    parser::{unquote, Expr, Pattern, Number, Int},
+    lexer::{Token, StringSegments},
+    parser::{unquote, interpolate, Expr, Pattern, Number, Int, BadInterpolationError},
 };
 
-grammar<'input>(text: &'input str);
+grammar<'input>;
 
 extern {
     type Location = usize;
@@ -55,7 +55,7 @@ extern {
         "null" => Token::Null,
 
         "number" => Token::Number(<&'input str>),
-        "string" => Token::String(<&'input str>),
+        "string" => Token::String((_, <StringSegments<'input>>, _)),
         "ident" => Token::Ident(<&'input str>),
     }
 }
@@ -167,16 +167,25 @@ Member: (Expr<'input>, Expr<'input>) = {
 };
 
 String: Expr<'input> = {
-    <start:@L> <s:"string"> =>? Ok(
-        Expr::String(
-            unquote(s).map_err(|err| ParseError::User {
-                error: SpannedError {
-                    error: LexicalError::BadEscape(err.error),
-                    location: (start + err.location.0, start + err.location.1),
-                },
-            })?
-        )
-    ),
+    <s:"string"> =>? {
+        Ok(match s {
+            StringSegments::Text(segments) => {
+                let content = unquote(segments.as_slice())
+                    .map_err(|err| ParseError::User {
+                        error: err.map(|err| err.into()),
+                    })?;
+                Expr::String(content)
+            },
+            StringSegments::Interpolated(segments) => {
+                let parts = interpolate(segments)
+                    .map_err(|error| match error {
+                        BadInterpolationError::Escape(err) => err.map(|err| err.into()),
+                        BadInterpolationError::Lexical(err) => err,
+                    })?;
+                Expr::InterpolatedString(parts)
+            }
+        })
+    },
 };
 
 Bool: Expr<'input> = {

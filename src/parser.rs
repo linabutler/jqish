@@ -5,9 +5,11 @@ use std::{borrow::Cow, fmt::Display, str::FromStr};
 
 use lalrpop_util::ParseError as LalrpopParseError;
 
+use crate::lexer::InterpolatedSegment;
+
 use super::{
     error::{LexicalError, SpannedError},
-    lexer::Lexer,
+    lexer::{Lexer, TextSegment},
 };
 
 mod grammar {
@@ -30,7 +32,7 @@ mod grammar {
 pub fn parse(input: &str) -> Result<Expr<'_>, SpannedError<LexicalError>> {
     let lexer = Lexer::new(input);
     let parser = grammar::TopParser::new();
-    parser.parse(input, lexer).map_err(|err| match err {
+    parser.parse(lexer).map_err(|err| match err {
         LalrpopParseError::ExtraToken {
             token: (start, _, end),
         } => SpannedError {
@@ -39,13 +41,13 @@ pub fn parse(input: &str) -> Result<Expr<'_>, SpannedError<LexicalError>> {
         },
         LalrpopParseError::InvalidToken { location: start } => SpannedError {
             error: LexicalError::BadToken,
-            location: (start, input.len()),
+            location: (start, start + 1),
         },
         LalrpopParseError::UnrecognizedEOF {
             location: start, ..
         } => SpannedError {
             error: LexicalError::BadToken,
-            location: (start, input.len()),
+            location: (start, start + 1),
         },
         LalrpopParseError::UnrecognizedToken {
             token: (start, _, end),
@@ -56,6 +58,15 @@ pub fn parse(input: &str) -> Result<Expr<'_>, SpannedError<LexicalError>> {
         },
         LalrpopParseError::User { error } => error,
     })
+}
+
+/// A segment within an interpolated string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpolatedStringPart<'a> {
+    /// A literal text segment.
+    Text(Cow<'a, str>),
+    /// An expression to be interpolated.
+    Expr(Expr<'a>),
 }
 
 /// A `jqish` expression.
@@ -101,6 +112,17 @@ pub enum Expr<'a> {
     /// assert_eq!(expr, Expr::String(Cow::Borrowed("hello")));
     /// ```
     String(Cow<'a, str>),
+
+    /// An interpolated string with embedded expressions.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// # use std::borrow::Cow;
+    /// # use jqish::{parse, Expr};
+    /// let expr = parse(r#""Hello, \(.name + ", how are \("you" + "?")")""#).unwrap();
+    /// ```
+    InterpolatedString(Vec<InterpolatedStringPart<'a>>),
 
     /// A Boolean literal.
     ///
@@ -604,43 +626,87 @@ impl FromStr for Number {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum BadInterpolationError {
+    #[error(transparent)]
+    Escape(#[from] SpannedError<BadEscapeError>),
+
+    #[error(transparent)]
+    Lexical(#[from] SpannedError<LexicalError>),
+}
+
+pub fn interpolate<'input>(
+    segments: Vec<InterpolatedSegment<'input>>,
+) -> Result<Vec<InterpolatedStringPart<'input>>, BadInterpolationError> {
+    let segments = segments
+        .into_iter()
+        .map(|segment| match segment {
+            InterpolatedSegment::Text(text) => Ok(InterpolatedStringPart::Text(unquote(
+                std::slice::from_ref(&text),
+            )?)),
+            InterpolatedSegment::Interpolation(tokens) => {
+                let expr = grammar::TopParser::new()
+                    .parse(tokens)
+                    .map_err(|err| match err {
+                        LalrpopParseError::ExtraToken {
+                            token: (start, _, end),
+                        } => SpannedError {
+                            error: LexicalError::BadToken,
+                            location: (start, end),
+                        },
+                        LalrpopParseError::InvalidToken { location: start } => SpannedError {
+                            error: LexicalError::BadToken,
+                            location: (start, start),
+                        },
+                        LalrpopParseError::UnrecognizedEOF {
+                            location: start, ..
+                        } => SpannedError {
+                            error: LexicalError::BadToken,
+                            location: (start, start + 1),
+                        },
+                        LalrpopParseError::UnrecognizedToken {
+                            token: (start, _, end),
+                            ..
+                        } => SpannedError {
+                            error: LexicalError::BadToken,
+                            location: (start, end),
+                        },
+                        LalrpopParseError::User { error } => error,
+                    })?;
+                Ok(InterpolatedStringPart::Expr(expr))
+            }
+        })
+        .collect::<Result<_, BadInterpolationError>>()?;
+
+    Ok(segments)
+}
+
 /// Removes surrounding quotes from, and expands escape sequences in,
 /// a string literal.
-pub fn unquote(s: &str) -> Result<Cow<'_, str>, SpannedError<BadEscapeError>> {
-    if !s.contains('\\') {
+pub fn unquote<'input>(
+    segments: &[TextSegment<'input>],
+) -> Result<Cow<'input, str>, SpannedError<BadEscapeError>> {
+    if let &[TextSegment::Content(_, content, _)] = segments {
         // If the string doesn't contain any escape sequences,
         // we can just drop the surrounding quotes and
         // return the contents.
-        return Ok(Cow::Borrowed(&s[1..s.len() - 1]));
+        return Ok(Cow::Borrowed(content));
     }
-    let mut string = String::with_capacity(s.len());
-    let mut chars = s.char_indices().peekable();
-    // Drop the surrounding quotes.
-    let (_, quote) = chars.next().unwrap();
-    let _ = chars.next_back().unwrap();
-    while let Some((start, c)) = chars.next() {
-        match c {
-            '\\' => {
-                let c = match chars.peek().unwrap() {
-                    // Note: we don't support `\b`, `\f`, or `\uHHHH`
-                    // escape sequences.
-                    (_, 'n') => '\n',
-                    (_, 'r') => '\r',
-                    (_, 't') => '\t',
-                    (_, '\\') => '\\',
-                    &(_, c) if c == quote => quote,
-                    &(end, c) => Err(SpannedError {
-                        error: BadEscapeError(c),
-                        location: (start, end),
-                    })?,
-                };
-                chars.next();
-                string.push(c);
-            }
-            c => string.push(c),
+    let mut string = String::new();
+    for s in segments {
+        match s {
+            TextSegment::Content(_, s, _) => string.push_str(s),
+            TextSegment::Escape(_, 'n', _) => string.push('\n'),
+            TextSegment::Escape(_, 'r', _) => string.push('\r'),
+            TextSegment::Escape(_, 't', _) => string.push('\t'),
+            &TextSegment::Escape(_, c @ ('"' | '\'' | '\\'), _) => string.push(c),
+            &TextSegment::Escape(start, c, end) => Err(SpannedError {
+                error: BadEscapeError(c),
+                location: (start, end),
+            })?,
         }
     }
-    Ok(string.into())
+    Ok(Cow::Owned(string))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2704,6 +2770,419 @@ mod tests {
 
     #[test]
     fn test_destructuring_example_from_manual() {
-        let result = parse(".resources as {$id, $kind, events: {$user_id, $ts}} ?// {$id, $kind, events: [{$user_id, $ts}]} | {$user_id, $kind, $id, $ts}").unwrap();
+        let _result = parse(".resources as {$id, $kind, events: {$user_id, $ts}} ?// {$id, $kind, events: [{$user_id, $ts}]} | {$user_id, $kind, $id, $ts}").unwrap();
+    }
+
+    #[test]
+    fn test_string_interpolation() {
+        let result = parse(r#""Hello, \(.name)!""#).unwrap();
+        assert!(matches!(result, Expr::InterpolatedString(_)));
+
+        let result = parse(r#""Count: \(length(.items))""#).unwrap();
+        assert!(matches!(result, Expr::InterpolatedString(_)));
+
+        let result = parse(r#""Sum: \(.a + .b)""#).unwrap();
+        assert!(matches!(result, Expr::InterpolatedString(_)));
+    }
+
+    #[test]
+    fn test_string_interpolation_comprehensive() {
+        use std::borrow::Cow;
+
+        // Test basic interpolation with field access
+        let result = parse(r#""Hello, \(.name)!""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 3);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Hello, "))
+            );
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Expr(Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String(Cow::Borrowed("name")).into()
+                ))
+            );
+            assert_eq!(parts[2], InterpolatedStringPart::Text(Cow::Borrowed("!")));
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test from jq test suite: "inter\("pol" + "ation")" -> "interpolation"
+        let result = parse(r#""inter\("pol" + "ation")""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("inter"))
+            );
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Expr(Expr::Add(
+                    Expr::String(Cow::Borrowed("pol")).into(),
+                    Expr::String(Cow::Borrowed("ation")).into()
+                ))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test arithmetic expressions in interpolation
+        let result = parse(r#""Sum: \(.a + .b), Product: \(.a * .b)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 4);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Sum: "))
+            );
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Expr(Expr::Add(
+                    Expr::Index(
+                        Expr::Identity.into(),
+                        Expr::String(Cow::Borrowed("a")).into()
+                    )
+                    .into(),
+                    Expr::Index(
+                        Expr::Identity.into(),
+                        Expr::String(Cow::Borrowed("b")).into()
+                    )
+                    .into()
+                ))
+            );
+            assert_eq!(
+                parts[2],
+                InterpolatedStringPart::Text(Cow::Borrowed(", Product: "))
+            );
+            assert_eq!(
+                parts[3],
+                InterpolatedStringPart::Expr(Expr::Multiply(
+                    Expr::Index(
+                        Expr::Identity.into(),
+                        Expr::String(Cow::Borrowed("a")).into()
+                    )
+                    .into(),
+                    Expr::Index(
+                        Expr::Identity.into(),
+                        Expr::String(Cow::Borrowed("b")).into()
+                    )
+                    .into()
+                ))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test function calls in interpolation
+        let result = parse(r#""Length: \(length(.items))""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Length: "))
+            );
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Expr(Expr::Call(
+                    "length",
+                    vec![Expr::Index(
+                        Expr::Identity.into(),
+                        Expr::String(Cow::Borrowed("items")).into()
+                    )]
+                ))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test pipe expressions in interpolation
+        let result = parse(r#""Upper: \(. | length)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Upper: "))
+            );
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Expr(Expr::Pipe(
+                    Expr::Identity.into(),
+                    Expr::Call("length", vec![]).into()
+                ))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test identity interpolation
+        let result = parse(r#""Value: \(.)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Value: "))
+            );
+            assert_eq!(parts[1], InterpolatedStringPart::Expr(Expr::Identity));
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test boolean and number literals in interpolation
+        let result = parse(r#""Bool: \(true), Number: \(42)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 4);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Bool: "))
+            );
+            assert_eq!(parts[1], InterpolatedStringPart::Expr(Expr::Bool(true)));
+            assert_eq!(
+                parts[2],
+                InterpolatedStringPart::Text(Cow::Borrowed(", Number: "))
+            );
+            assert_eq!(
+                parts[3],
+                InterpolatedStringPart::Expr(Expr::Number(Int(42).into()))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test null literal in interpolation
+        let result = parse(r#""Null: \(null)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Null: "))
+            );
+            assert_eq!(parts[1], InterpolatedStringPart::Expr(Expr::Null));
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+    }
+
+    #[test]
+    fn test_string_interpolation_edge_cases() {
+        use std::borrow::Cow;
+
+        // Test empty string interpolation
+        let result = parse(r#""\(.)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 1);
+            assert_eq!(parts[0], InterpolatedStringPart::Expr(Expr::Identity));
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test string starting with interpolation
+        let result = parse(r#""\(.name) says hello""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Expr(Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String(Cow::Borrowed("name")).into()
+                ))
+            );
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Text(Cow::Borrowed(" says hello"))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test string ending with interpolation
+        let result = parse(r#""Hello \(.name)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Hello "))
+            );
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Expr(Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String(Cow::Borrowed("name")).into()
+                ))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test multiple consecutive interpolations
+        let result = parse(r#""\(.a)\(.b)\(.c)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 3);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Expr(Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String(Cow::Borrowed("a")).into()
+                ))
+            );
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Expr(Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String(Cow::Borrowed("b")).into()
+                ))
+            );
+            assert_eq!(
+                parts[2],
+                InterpolatedStringPart::Expr(Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String(Cow::Borrowed("c")).into()
+                ))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test complex nested expressions
+        let result = parse(r#""Result: \(.data[0].user?.name // "unknown")""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Result: "))
+            );
+            // The second part should be a complex expression with Alt, Opt, Index, etc.
+            match &parts[1] {
+                InterpolatedStringPart::Expr(expr) => {
+                    // Verify it's an Alt expression (// operator)
+                    assert!(matches!(expr, Expr::Alt(_, _)));
+                }
+                _ => panic!("Expected interpolated expression"),
+            }
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test array and object literals in interpolation
+        let result = parse(r#""Array: \([1,2,3]), Object: \({key: "value"})""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 4);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Array: "))
+            );
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Expr(Expr::Array(vec![
+                    Expr::Number(Int(1).into()),
+                    Expr::Number(Int(2).into()),
+                    Expr::Number(Int(3).into())
+                ]))
+            );
+            assert_eq!(
+                parts[2],
+                InterpolatedStringPart::Text(Cow::Borrowed(", Object: "))
+            );
+            assert_eq!(
+                parts[3],
+                InterpolatedStringPart::Expr(Expr::Object(vec![(
+                    Expr::String(Cow::Borrowed("key")),
+                    Expr::String(Cow::Borrowed("value"))
+                )]))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // Test escape sequences with interpolation
+        let result = parse(r#""Line1\nResult: \(.value)\tEnd""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            // The lexer separates escape sequences into individual parts
+            assert_eq!(parts.len(), 6);
+            assert_eq!(
+                parts[0],
+                InterpolatedStringPart::Text(Cow::Borrowed("Line1"))
+            );
+            assert_eq!(parts[1], InterpolatedStringPart::Text(Cow::Borrowed("\n")));
+            assert_eq!(
+                parts[2],
+                InterpolatedStringPart::Text(Cow::Borrowed("Result: "))
+            );
+            assert_eq!(
+                parts[3],
+                InterpolatedStringPart::Expr(Expr::Index(
+                    Expr::Identity.into(),
+                    Expr::String(Cow::Borrowed("value")).into()
+                ))
+            );
+            assert_eq!(parts[4], InterpolatedStringPart::Text(Cow::Borrowed("\t")));
+            assert_eq!(parts[5], InterpolatedStringPart::Text(Cow::Borrowed("End")));
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+    }
+
+    #[test]
+    fn test_string_interpolation_jq_compatibility_examples() {
+        use std::borrow::Cow;
+
+        // Examples from jq test suite and manual
+
+        // Basic example from jq manual
+        let result = parse(r#""The input was \(.), which is one less than \(.+1)""#).unwrap();
+        assert!(matches!(result, Expr::InterpolatedString(_)));
+
+        // From jq.test: @html "<b>\(.)</b>"
+        let result = parse(r#""<b>\(.)</b>""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 3);
+            assert_eq!(parts[0], InterpolatedStringPart::Text(Cow::Borrowed("<b>")));
+            assert_eq!(parts[1], InterpolatedStringPart::Expr(Expr::Identity));
+            assert_eq!(
+                parts[2],
+                InterpolatedStringPart::Text(Cow::Borrowed("</b>"))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // From jq.test: "a$\(1+1)"
+        let result = parse(r#""a$\(1+1)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(parts[0], InterpolatedStringPart::Text(Cow::Borrowed("a$")));
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Expr(Expr::Add(
+                    Expr::Number(Int(1).into()).into(),
+                    Expr::Number(Int(1).into()).into()
+                ))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // From jq.test: "\(.) there!"
+        let result = parse(r#""\(.) there!""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(parts[0], InterpolatedStringPart::Expr(Expr::Identity));
+            assert_eq!(
+                parts[1],
+                InterpolatedStringPart::Text(Cow::Borrowed(" there!"))
+            );
+        } else {
+            panic!("Expected InterpolatedString");
+        }
+
+        // From jq.test: "foo\(.)"
+        let result = parse(r#""foo\(.)""#).unwrap();
+        if let Expr::InterpolatedString(parts) = result {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(parts[0], InterpolatedStringPart::Text(Cow::Borrowed("foo")));
+            assert_eq!(parts[1], InterpolatedStringPart::Expr(Expr::Identity));
+        } else {
+            panic!("Expected InterpolatedString");
+        }
     }
 }

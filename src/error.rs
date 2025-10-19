@@ -27,7 +27,7 @@ impl<T> SpannedError<T> {
 #[derive(Debug, thiserror::Error)]
 pub enum LexicalError {
     #[error("`{0}` can't be used here")]
-    Unexpected(char),
+    Unexpected(String),
     #[error("unterminated string; did you forget a closing `\"`?")]
     UnterminatedString,
     #[error(transparent)]
